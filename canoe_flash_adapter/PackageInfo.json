@@ -1,0 +1,31 @@
+{
+    "PackageId": "canoe_flash_adapter",
+    "PackageNameCN": "Canoe Flash 适配器",
+    "PackageNameEN": "Canoe Flash Adapter",
+    "PackageVersion": "1.0.0",
+    "DescriptionCN": "在 Canoe 中进行 Flash 编程操作",
+    "DescriptionEN": "Flash programming operations in Canoe",
+    "Author": "DOTRUST",
+    "NodeType": "Flash",
+    "NodeAdapterNameCN": "CANoe 刷写",
+    "NodeAdapterNameEN": "CANoe Flash",
+    "CallingRuntime": [
+        "COM",
+        "CLI"
+    ],
+    "SelfExaminationAbility": true,
+    "RequirementProperty": [
+        {
+            "id": "CANOE_PROJECT",
+            "nameCN": "Canoe 工程文件",
+            "nameEN": "Canoe Project File",
+            "fileExtension": ".zip"
+        },
+        {
+            "id": "SOFTWARE_PACKAGE",
+            "nameCN": "软件包",
+            "nameEN": "Software Package",
+            "fileExtension": ".bin|.s7|.s19|.hex|.elf"
+        }
+    ]
+}
