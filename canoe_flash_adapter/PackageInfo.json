@@ -1,10 +1,11 @@
 {
+    "ManifestVersion": 1,
     "PackageId": "canoe_flash_adapter",
-    "PackageNameCN": "Canoe Flash 适配器",
-    "PackageNameEN": "Canoe Flash Adapter",
+    "PackageNameCN": "CANoe Flash 适配器",
+    "PackageNameEN": "CANoe Flash Adapter",
     "PackageVersion": "1.0.0",
-    "DescriptionCN": "在 Canoe 中进行 Flash 编程操作",
-    "DescriptionEN": "Flash programming operations in Canoe",
+    "DescriptionCN": "使用CANoe完成刷写任务",
+    "DescriptionEN": "Use CANoe to complete the flash task",
     "Author": "DOTRUST",
     "NodeType": "Flash",
     "NodeAdapterNameCN": "CANoe 刷写",
@@ -17,15 +18,31 @@
     "RequirementProperty": [
         {
             "id": "CANOE_PROJECT",
-            "nameCN": "Canoe 工程文件",
-            "nameEN": "Canoe Project File",
+            "nameCN": "CANoe 工程文件",
+            "nameEN": "CANoe Project File",
+            "type": "file",
             "fileExtension": ".zip"
         },
         {
             "id": "SOFTWARE_PACKAGE",
             "nameCN": "软件包",
             "nameEN": "Software Package",
+            "type": "file",
             "fileExtension": ".bin|.s7|.s19|.hex|.elf"
+        }
+    ],
+    "OnDeviceProperty": [
+        {
+            "id": "CANOE_SOFTWARE_POSITION",
+            "nameCN": "CANoe 可执行文件",
+            "nameEN": "CANoe Executable",
+            "type": "string_url_file"
+        },
+        {
+            "id": "CANOE_PROJECT_DIR",
+            "nameCN": "任务工作区根目录",
+            "nameEN": "Task Workspace Root",
+            "type": "string_url_dir"
         }
     ]
 }
