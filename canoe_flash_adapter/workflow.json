@@ -1,0 +1,66 @@
+{
+    "SchemaVersion": "1.0",
+    "EntryModule": "scripts/canoe_flash.js",
+    "Stages": [
+        {
+            "StageId": "prepare_workspace",
+            "Name": "准备任务工作区",
+            "Export": "prepare",
+            "TimeoutMs": 60000,
+            "Arguments": [
+                {
+                    "Source": "requirement",
+                    "Key": "CANOE_PROJECT"
+                },
+                {
+                    "Source": "requirement",
+                    "Key": "SOFTWARE_PACKAGE"
+                }
+            ]
+        },
+        {
+            "StageId": "launch_application",
+            "Name": "启动 CANoe",
+            "Export": "launch",
+            "TimeoutMs": 60000
+        },
+        {
+            "StageId": "connect_automation",
+            "Name": "连接 Automation",
+            "Export": "connect",
+            "TimeoutMs": 60000
+        },
+        {
+            "StageId": "start_measurement",
+            "Name": "打开配置并启动测量",
+            "Export": "startMeasurement",
+            "TimeoutMs": 120000
+        },
+        {
+            "StageId": "validate_contract",
+            "Name": "校验刷写契约",
+            "Export": "validateContract",
+            "TimeoutMs": 30000
+        },
+        {
+            "StageId": "flash_and_verify",
+            "Name": "执行刷写并验证",
+            "Export": "flash",
+            "TimeoutMs": 1800000
+        },
+        {
+            "StageId": "collect_artifacts",
+            "Name": "收集刷写产物",
+            "Export": "collectArtifacts",
+            "TimeoutMs": 60000
+        }
+    ],
+    "Cleanup": [
+        {
+            "StageId": "cleanup",
+            "Name": "清理 CANoe 会话",
+            "Export": "cleanup",
+            "TimeoutMs": 60000
+        }
+    ]
+}

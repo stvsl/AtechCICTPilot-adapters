@@ -1,5 +1,5 @@
 {
-    "ManifestVersion": 1,
+    "ManifestVersion": 2,
     "PackageId": "canoe_flash_adapter",
     "PackageNameCN": "CANoe Flash 适配器",
     "PackageNameEN": "CANoe Flash Adapter",
@@ -10,6 +10,27 @@
     "NodeType": "Flash",
     "NodeAdapterNameCN": "CANoe 刷写",
     "NodeAdapterNameEN": "CANoe Flash",
+    "Runtime": {
+        "ApiVersion": "1.0",
+        "Language": "javascript",
+        "Workflow": "workflow.json"
+    },
+    "Permissions": {
+        "COM": {
+            "ProgIds": [
+                "CANoe.Application"
+            ],
+            "AllowActiveObject": true
+        },
+        "CLI": {
+            "Executables": [
+                {
+                    "DeviceProperty": "CANOE_SOFTWARE_POSITION"
+                }
+            ],
+            "AllowTerminal": false
+        }
+    },
     "CallingRuntime": [
         "COM",
         "CLI"
@@ -21,14 +42,16 @@
             "nameCN": "CANoe 工程文件",
             "nameEN": "CANoe Project File",
             "type": "file",
-            "fileExtension": ".zip"
+            "fileExtension": ".zip",
+            "required": true
         },
         {
             "id": "SOFTWARE_PACKAGE",
             "nameCN": "软件包",
             "nameEN": "Software Package",
             "type": "file",
-            "fileExtension": ".bin|.s7|.s19|.hex|.elf"
+            "fileExtension": ".bin|.s7|.s19|.hex|.elf",
+            "required": true
         }
     ],
     "OnDeviceProperty": [
@@ -36,13 +59,15 @@
             "id": "CANOE_SOFTWARE_POSITION",
             "nameCN": "CANoe 可执行文件",
             "nameEN": "CANoe Executable",
-            "type": "string_url_file"
+            "type": "string_url_file",
+            "required": true
         },
         {
             "id": "CANOE_PROJECT_DIR",
             "nameCN": "任务工作区根目录",
             "nameEN": "Task Workspace Root",
-            "type": "string_url_dir"
+            "type": "string_url_dir",
+            "required": false
         }
     ]
 }
