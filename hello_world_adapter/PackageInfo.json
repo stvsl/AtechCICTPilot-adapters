@@ -1,0 +1,23 @@
+{
+    "ManifestVersion": 2,
+    "PackageId": "hello_world_adapter",
+    "PackageNameCN": "Hello World 测试适配器",
+    "PackageNameEN": "Hello World Test Adapter",
+    "PackageVersion": "1.0.0",
+    "DescriptionCN": "用于验证适配器导入和执行链路的最小测试适配器",
+    "DescriptionEN": "Minimal adapter for validating plugin import and execution",
+    "Author": "DOTRUST",
+    "NodeType": "Test",
+    "NodeAdapterNameCN": "Hello World",
+    "NodeAdapterNameEN": "Hello World",
+    "Runtime": {
+        "ApiVersion": "1.0",
+        "Language": "javascript",
+        "Workflow": "workflow.json"
+    },
+    "Permissions": {},
+    "CallingRuntime": [],
+    "SelfExaminationAbility": true,
+    "RequirementProperty": [],
+    "OnDeviceProperty": []
+}
