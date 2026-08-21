@@ -1,8 +1,8 @@
 stages {
     stage("Hello World") {
-        timeout(30000)
+        timeout(660000)
         steps {
-            runjs("scripts/hello_world.js", "helloWorld")
+            runjs("scripts/hello_world.js", "helloWorld", env.WAIT_DURATION_SECONDS)
         }
     }
 }

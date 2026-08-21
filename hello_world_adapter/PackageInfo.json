@@ -4,8 +4,8 @@
     "PackageNameCN": "Hello World 测试适配器",
     "PackageNameEN": "Hello World Test Adapter",
     "PackageVersion": "1.0.0",
-    "DescriptionCN": "用于验证适配器导入和执行链路的最小测试适配器",
-    "DescriptionEN": "Minimal adapter for validating plugin import and execution",
+    "DescriptionCN": "用于验证适配器导入、执行链路和长时运行任务表现的测试适配器",
+    "DescriptionEN": "Test adapter for validating plugin import, execution, and long-running task behavior",
     "Author": "DOTRUST",
     "NodeType": "Test",
     "NodeAdapterNameCN": "Hello World",
@@ -18,6 +18,14 @@
     "Permissions": {},
     "CallingRuntime": [],
     "SelfExaminationAbility": true,
-    "RequirementProperty": [],
+    "RequirementProperty": [
+        {
+            "id": "WAIT_DURATION_SECONDS",
+            "nameCN": "等待测试时长（秒，0-600）",
+            "nameEN": "Test Wait Duration (seconds, 0-600)",
+            "type": "integer",
+            "required": true
+        }
+    ],
     "OnDeviceProperty": []
 }
