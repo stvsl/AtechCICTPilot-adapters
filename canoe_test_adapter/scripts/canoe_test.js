@@ -6,6 +6,8 @@ import * as task from "@atech/task";
 const CONTRACT_VERSION = "1.0";
 const DEFAULT_TEST_CONFIGURATION = "CICT Test Configuration";
 const DEFAULT_TEST_TIMEOUT_MS = 1800000;
+const CANOE_OPEN_TIMEOUT_MS = 60000;
+const CANOE_OPEN_RETRY_DELAY_MS = 1000;
 
 let application = null;
 let measurement = null;
@@ -32,6 +34,7 @@ let mockMode = false;
 let measurementRunning = false;
 let testStarted = false;
 let expectedResultCount = 0;
+let useProjectTestSetup = false;
 
 function requireSafeRelativePath(value, field) {
     if (typeof value !== "string" || value.length === 0
@@ -76,6 +79,71 @@ function readJson(uri, field) {
         throw new Error(`${field} must contain a JSON object or array`);
     }
     return value;
+}
+
+function parentUri(uri) {
+    const index = String(uri).lastIndexOf("/");
+    if (index <= "workspace://".length) {
+        throw new Error(`Unable to determine a project directory from ${uri}`);
+    }
+    return String(uri).substring(0, index);
+}
+
+function relativePath(rootUri, uri) {
+    const root = String(rootUri).replace(/\/$/, "");
+    const prefix = `${root}/`;
+    if (!String(uri).startsWith(prefix)) {
+        throw new Error(`Project file is outside the extracted archive: ${uri}`);
+    }
+    return String(uri).substring(prefix.length);
+}
+
+function findProjectDescriptor(rootUri) {
+    const directDescriptor = `${rootUri}/canoe-project.json`;
+    if (fs.exists(directDescriptor)) {
+        return directDescriptor;
+    }
+    const descriptors = fs.list(rootUri, true).filter((entry) =>
+        entry.type === "file" && entry.name.toLowerCase() === "canoe-project.json");
+    if (descriptors.length > 1) {
+        throw new Error("CANOE_PROJECT contains multiple canoe-project.json files");
+    }
+    return descriptors.length === 1 ? descriptors[0].uri : "";
+}
+
+function loadProject(extractionRootUri) {
+    const descriptorUri = findProjectDescriptor(extractionRootUri);
+    if (descriptorUri) {
+        const rootUri = parentUri(descriptorUri);
+        const descriptor = readJson(descriptorUri, "canoe-project.json");
+        if (Array.isArray(descriptor)) {
+            throw new Error("canoe-project.json must contain an object");
+        }
+        return { rootUri, descriptor, usesProjectTestSetup: false };
+    }
+
+    const configurations = fs.list(extractionRootUri, true).filter((entry) =>
+        entry.type === "file" && entry.name.toLowerCase().endsWith(".cfg"));
+    if (configurations.length === 0) {
+        throw new Error(
+            "CANOE_PROJECT must contain canoe-project.json or one CANoe .cfg file");
+    }
+    if (configurations.length > 1) {
+        throw new Error(
+            "CANOE_PROJECT contains multiple CANoe .cfg files; add canoe-project.json to select one");
+    }
+
+    const configurationPath = relativePath(extractionRootUri,
+                                           configurations[0].uri);
+    task.info(`Using native CANoe project configuration: ${configurationPath}`);
+    return {
+        rootUri: extractionRootUri,
+        descriptor: {
+            ContractVersion: CONTRACT_VERSION,
+            Configuration: configurationPath
+        },
+        usesProjectTestSetup: true
+    };
 }
 
 function descriptorValue(name, fallback) {
@@ -440,28 +508,39 @@ function removeAll(collection, methodName, secondArgument) {
 
 function configureVtest() {
     const configurations = configuration.get("TestConfigurations");
+    const useExistingTestConfiguration = useProjectTestSetup
+        && scriptUris.length === 0;
     if (collectionCount(configurations) === 0) {
+        if (useExistingTestConfiguration) {
+            throw new Error("CANoe project does not contain a TestConfiguration");
+        }
         configurations.call("Add");
     }
     testConfiguration = collectionItems(configurations)[0];
     if (testConfiguration === undefined) {
         throw new Error("CANoe configuration could not create a TestConfiguration");
     }
-    const configurationName = descriptorValue("TestConfiguration", DEFAULT_TEST_CONFIGURATION);
-    testConfiguration.set("Name", configurationName);
+    if (!useExistingTestConfiguration) {
+        const configurationName = descriptorValue("TestConfiguration", DEFAULT_TEST_CONFIGURATION);
+        testConfiguration.set("Name", configurationName);
+    }
     testConfiguration.set("Enabled", true);
-    const settings = optionalProperty(testConfiguration, "Settings");
-    if (settings !== undefined) {
-        try {
-            settings.set("ExecutionMode", 0);
-        } catch (_) {
-            // Older CANoe versions use the default single-execution mode.
+    if (!useExistingTestConfiguration) {
+        const settings = optionalProperty(testConfiguration, "Settings");
+        if (settings !== undefined) {
+            try {
+                settings.set("ExecutionMode", 0);
+            } catch (_) {
+                // Older CANoe versions use the default single-execution mode.
+            }
         }
     }
     testUnits = testConfiguration.get("TestUnits");
-    removeAll(testUnits, "Remove");
-    for (const script of scriptUris) {
-        testUnits.call("Add", fs.nativePath(script.uri));
+    if (!useExistingTestConfiguration) {
+        removeAll(testUnits, "Remove");
+        for (const script of scriptUris) {
+            testUnits.call("Add", fs.nativePath(script.uri));
+        }
     }
     const units = collectionItems(testUnits);
     const selected = [];
@@ -559,6 +638,28 @@ function configureCommunication() {
     expectedResultCount = selected.length;
 }
 
+function configureProjectTests() {
+    const setup = optionalProperty(configuration, "TestSetup");
+    const environments = setup === undefined || setup === null
+        ? null : optionalProperty(setup, "TestEnvironments");
+    if (environments !== null && environments !== undefined
+            && collectionCount(environments) > 0) {
+        testMode = "communication";
+        configureCommunication();
+        return;
+    }
+
+    const configurations = optionalProperty(configuration, "TestConfigurations");
+    if (configurations !== null && configurations !== undefined
+            && collectionCount(configurations) > 0) {
+        testMode = "vtest";
+        configureVtest();
+        return;
+    }
+
+    throw new Error("CANoe project does not contain a TestEnvironment or TestConfiguration");
+}
+
 async function waitUntil(predicate, timeoutMs, description) {
     const started = Date.now();
     while (!predicate()) {
@@ -570,28 +671,74 @@ async function waitUntil(predicate, timeoutMs, description) {
     }
 }
 
-function openConfiguration() {
+function errorMessage(error) {
+    return error && error.message ? String(error.message) : String(error);
+}
+
+function isTransientOpenFailure(error) {
+    return /COM invocation failed/i.test(errorMessage(error));
+}
+
+function checkOpenResult() {
+    const openResult = optionalProperty(configuration, "OpenConfigurationResult")
+        || optionalProperty(application, "OpenConfigurationResult");
+    if (openResult === undefined || openResult === null) {
+        return;
+    }
+
+    const resultCode = optionalProperty(openResult, "result");
+    const openError = optionalProperty(openResult, "ErrorMessage");
+    release(openResult);
+    if (resultCode === undefined || Number(resultCode) === 0) {
+        return;
+    }
+    if (Number(resultCode) === 2) {
+        task.warning(`CANoe opened the configuration with a warning${
+            openError ? `: ${openError}` : ""}`);
+        return;
+    }
+    const detail = openError ? `: ${openError}`
+        : ` with result ${resultCode}`;
+    throw new Error(`CANoe configuration open failed${detail}`);
+}
+
+async function openConfiguration() {
     if (application === null) {
         throw new Error("CANoe Automation is not connected");
     }
     if (configuration !== null) {
         return;
     }
-    try {
-        application.call("Open", fs.nativePath(configurationUri), true, true);
-    } catch (_) {
-        application.call("Open", fs.nativePath(configurationUri));
-    }
-    configuration = application.get("Configuration");
-    const openResult = optionalProperty(configuration, "OpenConfigurationResult")
-        || optionalProperty(application, "OpenConfigurationResult");
-    if (openResult !== undefined && openResult !== null) {
-        const resultCode = optionalProperty(openResult, "result");
-        if (resultCode !== undefined && Number(resultCode) !== 0) {
-            release(openResult);
-            throw new Error(`CANoe configuration open failed with result ${resultCode}`);
+    // The task workspace is disposable, so CANoe may persist an upgraded
+    // configuration there. Keep prompts disabled for unattended execution.
+    const started = Date.now();
+    let attempts = 0;
+    let lastError = null;
+    while (true) {
+        task.checkCancelled();
+        try {
+            application.call("Open", fs.nativePath(configurationUri), true, false);
+            configuration = application.get("Configuration");
+            checkOpenResult();
+            return;
+        } catch (error) {
+            release(configuration);
+            configuration = null;
+            if (!isTransientOpenFailure(error)) {
+                throw error;
+            }
+            lastError = error;
         }
-        release(openResult);
+
+        if (Date.now() - started >= CANOE_OPEN_TIMEOUT_MS) {
+            throw new Error(
+                `Timed out opening CANoe configuration after ${attempts + 1} attempts: ${
+                    errorMessage(lastError)}`);
+        }
+        attempts += 1;
+        task.warning(`CANoe is still initializing; retrying configuration open `
+            + `(attempt ${attempts}): ${errorMessage(lastError)}`);
+        await task.delay(CANOE_OPEN_RETRY_DELAY_MS);
     }
 }
 
@@ -610,17 +757,14 @@ export async function prepare(projectPackage) {
     results = [];
     testStarted = false;
     expectedResultCount = 0;
+    useProjectTestSetup = false;
     mockMode = Boolean(task.option("MockAutomation", false));
 
     fs.extractZip(projectPackage, projectRootUri);
-    const descriptorUri = `${projectRootUri}/canoe-project.json`;
-    if (!fs.exists(descriptorUri)) {
-        throw new Error("CANOE_PROJECT must contain canoe-project.json");
-    }
-    projectDescriptor = readJson(descriptorUri, "canoe-project.json");
-    if (Array.isArray(projectDescriptor)) {
-        throw new Error("canoe-project.json must contain an object");
-    }
+    const project = loadProject(projectRootUri);
+    projectRootUri = project.rootUri;
+    projectDescriptor = project.descriptor;
+    useProjectTestSetup = project.usesProjectTestSetup;
     if (String(projectDescriptor.ContractVersion) !== CONTRACT_VERSION) {
         throw new Error(`Unsupported canoe-project.json contract: ${projectDescriptor.ContractVersion}`);
     }
@@ -646,7 +790,10 @@ export async function prepare(projectPackage) {
     }
     addExternalScripts(optionalRequirement("TEST_SCRIPTS"));
     if (scriptUris.length === 0) {
-        throw new Error("No CANoe test script (.vtuexe/.tse/.xml) was supplied");
+        if (!useProjectTestSetup) {
+            throw new Error("No CANoe test script (.vtuexe/.tse/.xml) was supplied");
+        }
+        testMode = "project";
     }
     requestedIds = parseIds(optionalRequirement("TEST_CASE_IDS"));
     if (requestedIds.length === 0 && Array.isArray(projectDescriptor.TestCaseIds)) {
@@ -668,7 +815,8 @@ export async function launch() {
     const executable = task.device("CANOE_SOFTWARE_POSITION");
     canoeProcess = cli.start({
         executable,
-        arguments: []
+        // CANoe's COM mode suppresses the disclaimer and other modal dialogs.
+        arguments: ["-embedding"]
     });
     launchedByTask = true;
     await task.delay(1500);
@@ -690,7 +838,7 @@ export async function startMeasurement() {
         task.progress(10);
         return;
     }
-    openConfiguration();
+    await openConfiguration();
     measurement = application.get("Measurement");
     if (measurement.get("Running") !== true) {
         measurement.call("Start");
@@ -706,8 +854,10 @@ export async function configure() {
         task.progress(15);
         return;
     }
-    openConfiguration();
-    if (testMode === "communication") {
+    await openConfiguration();
+    if (testMode === "project") {
+        configureProjectTests();
+    } else if (testMode === "communication") {
         configureCommunication();
     } else {
         configureVtest();
@@ -880,4 +1030,5 @@ export async function cleanup() {
     measurementRunning = false;
     testStarted = false;
     launchedByTask = false;
+    useProjectTestSetup = false;
 }

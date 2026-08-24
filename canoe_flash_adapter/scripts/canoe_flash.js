@@ -13,6 +13,8 @@ const DEFAULT_FLASH_MODULE = "FlashDownLoad";
 const DEFAULT_INPUT_DIRECTORY = "Input";
 const DEFAULT_CONFIGURATION_TIMEOUT_MS = 120000;
 const DEFAULT_FLASH_TIMEOUT_MS = 1800000;
+const CANOE_OPEN_TIMEOUT_MS = 60000;
+const CANOE_OPEN_RETRY_DELAY_MS = 1000;
 
 let application = null;
 let measurement = null;
@@ -317,28 +319,74 @@ function release(object) {
     }
 }
 
-function openConfiguration() {
+function errorMessage(error) {
+    return error && error.message ? String(error.message) : String(error);
+}
+
+function isTransientOpenFailure(error) {
+    return /COM invocation failed/i.test(errorMessage(error));
+}
+
+function checkOpenResult() {
+    const openResult = optionalProperty(configuration, "OpenConfigurationResult")
+        || optionalProperty(application, "OpenConfigurationResult");
+    if (openResult === undefined || openResult === null) {
+        return;
+    }
+
+    const resultCode = optionalProperty(openResult, "result");
+    const openError = optionalProperty(openResult, "ErrorMessage");
+    release(openResult);
+    if (resultCode === undefined || Number(resultCode) === 0) {
+        return;
+    }
+    if (Number(resultCode) === 2) {
+        task.warning(`CANoe opened the configuration with a warning${
+            openError ? `: ${openError}` : ""}`);
+        return;
+    }
+    const detail = openError ? `: ${openError}`
+        : ` with result ${resultCode}`;
+    throw new Error(`CANoe configuration open failed${detail}`);
+}
+
+async function openConfiguration() {
     if (application === null) {
         throw new Error("CANoe Automation is not connected");
     }
     if (configuration !== null) {
         return;
     }
-    try {
-        application.call("Open", fs.nativePath(configurationUri), true, true);
-    } catch (_) {
-        application.call("Open", fs.nativePath(configurationUri));
-    }
-    configuration = application.get("Configuration");
-    const openResult = optionalProperty(configuration, "OpenConfigurationResult")
-        || optionalProperty(application, "OpenConfigurationResult");
-    if (openResult !== undefined && openResult !== null) {
-        const resultCode = optionalProperty(openResult, "result");
-        if (resultCode !== undefined && Number(resultCode) !== 0) {
-            release(openResult);
-            throw new Error(`CANoe configuration open failed with result ${resultCode}`);
+    // The task workspace is disposable, so CANoe may persist an upgraded
+    // configuration there. Keep prompts disabled for unattended execution.
+    const started = Date.now();
+    let attempts = 0;
+    let lastError = null;
+    while (true) {
+        task.checkCancelled();
+        try {
+            application.call("Open", fs.nativePath(configurationUri), true, false);
+            configuration = application.get("Configuration");
+            checkOpenResult();
+            return;
+        } catch (error) {
+            release(configuration);
+            configuration = null;
+            if (!isTransientOpenFailure(error)) {
+                throw error;
+            }
+            lastError = error;
         }
-        release(openResult);
+
+        if (Date.now() - started >= CANOE_OPEN_TIMEOUT_MS) {
+            throw new Error(
+                `Timed out opening CANoe configuration after ${attempts + 1} attempts: ${
+                    errorMessage(lastError)}`);
+        }
+        attempts += 1;
+        task.warning(`CANoe is still initializing; retrying configuration open `
+            + `(attempt ${attempts}): ${errorMessage(lastError)}`);
+        await task.delay(CANOE_OPEN_RETRY_DELAY_MS);
     }
 }
 
@@ -427,7 +475,8 @@ export async function launch() {
     const executable = task.device("CANOE_SOFTWARE_POSITION");
     canoeProcess = cli.start({
         executable,
-        arguments: []
+        // CANoe's COM mode suppresses the disclaimer and other modal dialogs.
+        arguments: ["-embedding"]
     });
     launchedByTask = true;
     task.info(`CANoe started with PID ${canoeProcess.pid}`);
@@ -453,7 +502,7 @@ export async function startMeasurement() {
         task.progress(10);
         return;
     }
-    openConfiguration();
+    await openConfiguration();
     measurement = application.get("Measurement");
     if (measurement.get("Running") !== true) {
         measurement.call("Start");
@@ -470,7 +519,7 @@ export async function validateContract() {
         task.progress(15);
         return;
     }
-    openConfiguration();
+    await openConfiguration();
     userFiles = configuration.get("UserFiles");
     const setup = configuration.get("TestSetup");
     const environments = setup.get("TestEnvironments");
