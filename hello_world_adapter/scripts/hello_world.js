@@ -44,20 +44,16 @@ export async function prepareWorkspace() {
         taskId: task.id(),
         status: "prepared"
     }, null, 2));
-    task.output("WORKSPACE_URI", workspaceDirectoryUri);
-    task.log("info", "Hello World test workspace prepared", {
-        workspaceUri: workspaceDirectoryUri
-    });
-    task.progress(5, "Test workspace prepared");
+    task.info(`Hello World test workspace prepared: ${workspaceDirectoryUri}`);
+    task.progress(5);
     await task.delay(100);
 }
 
 export async function validateInput(waitDurationUri) {
     requirePreparedWorkspace();
     waitDurationSeconds = readWaitDurationSeconds(waitDurationUri);
-    task.output("WAIT_DURATION_SECONDS", waitDurationSeconds);
-    task.log("info", `Validated a ${waitDurationSeconds}-second workload`);
-    task.progress(10, "Test parameters validated");
+    task.info(`Validated a ${waitDurationSeconds}-second workload`);
+    task.progress(10);
     await task.delay(100);
 }
 
@@ -68,23 +64,21 @@ export async function helloWorld() {
     }
 
     startedAt = Date.now();
-    task.log("info", `Simulating a ${waitDurationSeconds}-second workload`);
-    task.progress(20, "Hello World workload started");
+    task.info(`Simulating a ${waitDurationSeconds}-second workload`);
+    task.progress(20);
 
     for (let elapsedSeconds = 0; elapsedSeconds < waitDurationSeconds;
          ++elapsedSeconds) {
         await task.delay(1000);
         const progress = 20 + Math.floor(
             (elapsedSeconds + 1) * 55 / waitDurationSeconds);
-        task.progress(progress,
-                      `Simulating workload: ${elapsedSeconds + 1}/${waitDurationSeconds} seconds`);
+        task.progress(progress);
     }
 
     completedAt = Date.now();
     helloWorldCompleted = true;
-    task.log("info", message);
-    task.output("MESSAGE", message);
-    task.progress(75, message);
+    task.info(message);
+    task.progress(75);
     return { message, waitDurationSeconds };
 }
 
@@ -108,9 +102,8 @@ export async function verifyResult() {
         throw new Error("Hello World test report verification failed");
     }
 
-    task.output("VERIFICATION_STATUS", "passed");
-    task.log("info", "Hello World result verified");
-    task.progress(90, "Execution result verified");
+    task.info("Hello World result verified");
+    task.progress(90);
     await task.delay(100);
 }
 
@@ -120,13 +113,12 @@ export async function publishReport() {
     }
 
     fs.copy(workspaceReportUri, artifactReportUri, true);
-    task.artifact(artifactReportUri, {
-        name: "Hello World test report",
-        mediaType: "application/json"
-    });
-    task.output("REPORT_URI", artifactReportUri);
-    task.log("info", "Hello World test report published");
-    task.progress(100, "Test report published");
+    task.publish("REPORT_URI",
+                 artifactReportUri,
+                 "Hello World test report",
+                 "application/json");
+    task.info("Hello World test report published");
+    task.progress(100);
     await task.delay(100);
 }
 
@@ -137,7 +129,6 @@ export async function cleanup() {
         reportCreated: fs.exists(workspaceReportUri),
         status: "cleaned"
     }, null, 2));
-    task.log("info", "Hello World test cleanup completed");
+    task.info("Hello World test cleanup completed");
     await task.delay(100, true);
-    task.output("CLEANUP_COMPLETED", true);
 }

@@ -110,9 +110,7 @@ function applySystemVariables(uri, values) {
     });
     if (changed > 0) {
         fs.writeText(uri, xml);
-        task.log("info", `Updated ${changed} CANoe system variable(s)`, {
-            file: uri
-        });
+        task.info(`Updated ${changed} CANoe system variable(s): ${uri}`);
     }
 }
 
@@ -411,25 +409,19 @@ export async function prepare(projectPackage, softwarePackage) {
         flashParameters.fileName = firmwareName;
     }
     applySystemVariables(variableUri, flashParameters);
-    task.output("FIRMWARE_URI", firmwareUri);
-    task.output("CANOE_CONFIGURATION", configurationUri);
-    task.log("info", "CANoe project prepared", {
-        configuration: configurationUri,
-        firmware: firmwareUri,
-        inputDirectory: inputDirectoryUri
-    });
-    task.progress(5, "CANoe project prepared");
+    task.info(`CANoe project prepared: ${configurationUri}`);
+    task.progress(5);
 }
 
 export async function launch() {
     if (mockMode) {
-        task.log("info", "Using the CANoe Automation simulator");
-        task.progress(8, "CANoe simulator ready");
+        task.info("Using the CANoe Automation simulator");
+        task.progress(8);
         return;
     }
     if (Boolean(task.option("AttachExisting", false))) {
         launchedByTask = false;
-        task.log("info", "Attaching to an existing CANoe process");
+        task.info("Attaching to an existing CANoe process");
         return;
     }
     const executable = task.device("CANOE_SOFTWARE_POSITION");
@@ -438,8 +430,7 @@ export async function launch() {
         arguments: []
     });
     launchedByTask = true;
-    task.output("CANOE_PROCESS", canoeProcess);
-    task.log("info", `CANoe started with PID ${canoeProcess.pid}`);
+    task.info(`CANoe started with PID ${canoeProcess.pid}`);
     await task.delay(1500);
 }
 
@@ -451,7 +442,7 @@ export async function connect() {
     application = attachExisting
         ? com.getActive("CANoe.Application")
         : com.create("CANoe.Application");
-    task.log("info", attachExisting
+    task.info(attachExisting
         ? "Attached to an existing CANoe instance"
         : "Connected to CANoe Automation");
 }
@@ -459,7 +450,7 @@ export async function connect() {
 export async function startMeasurement() {
     if (mockMode) {
         measurementRunning = true;
-        task.progress(10, "CANoe Measurement is running");
+        task.progress(10);
         return;
     }
     openConfiguration();
@@ -471,13 +462,12 @@ export async function startMeasurement() {
                     DEFAULT_CONFIGURATION_TIMEOUT_MS,
                     "CANoe Measurement to start");
     measurementRunning = true;
-    task.progress(10, "CANoe Measurement is running");
+    task.progress(10);
 }
 
 export async function validateContract() {
     if (mockMode) {
-        task.output("FLASH_MODULE", DEFAULT_FLASH_MODULE);
-        task.progress(15, "FlashDownLoad module is ready");
+        task.progress(15);
         return;
     }
     openConfiguration();
@@ -498,9 +488,8 @@ export async function validateContract() {
     flashStarted = false;
     flashReport = optionalProperty(flashModule, "Report");
     userFiles.call("Add", fs.nativePath(firmwareUri));
-    task.output("FLASH_MODULE", moduleName);
-    task.log("info", `CANoe ${moduleName} module loaded`);
-    task.progress(15, "FlashDownLoad module is ready");
+    task.info(`CANoe ${moduleName} module loaded`);
+    task.progress(15);
 }
 
 export async function flash() {
@@ -510,13 +499,10 @@ export async function flash() {
     if (mockMode) {
         for (let progress = 20; progress <= 90; progress += 10) {
             await task.delay(50);
-            task.progress(progress, `FlashDownLoad progress ${progress}%`, { progress });
+            task.progress(progress);
         }
         const version = expectedVersion();
-        task.output("REPORTED_VERSION", version);
-        task.output("EXPECTED_VERSION", version);
-        task.output("VERDICT", "passed");
-        task.progress(96, "ECU flash and verification succeeded");
+        task.progress(96);
         return;
     }
     if (flashModule === null) {
@@ -538,27 +524,21 @@ export async function flash() {
             throw new Error("Timed out waiting for FlashDownLoad to finish");
         }
         const progress = moduleProgress();
-        task.progress(15 + Math.round(progress * 0.8),
-                      `FlashDownLoad progress ${Math.round(progress)}%`, { progress });
+        task.progress(15 + Math.round(progress * 0.8));
         await task.delay(500);
     }
     reportUri = reportPathUri();
     const reportedVersion = extractReportedVersion(reportUri);
     const expected = expectedVersion();
     const verdict = moduleVerdict();
-    task.output("REPORT_URI", reportUri);
-    task.output("REPORTED_VERSION", reportedVersion);
-    task.output("EXPECTED_VERSION", expected);
-    task.output("VERDICT", verdict || (reportedVersion === expected ? "passed" : "failed"));
     if (!reportedVersion || reportedVersion !== expected
             || (verdict && !verdictPassed(verdict))) {
         throw new Error(`Flash verification failed: expected ${expected}, got ${reportedVersion || "<empty>"}`);
     }
-    task.progress(96, "ECU flash and verification succeeded");
+    task.progress(96);
 }
 
 export async function collectArtifacts() {
-    const collected = [];
     const artifactPaths = Array.isArray(projectDescriptor && projectDescriptor.Artifacts)
         ? projectDescriptor.Artifacts.slice() : [];
     const finalReportUri = reportPathUri();
@@ -573,22 +553,23 @@ export async function collectArtifacts() {
         const relativePath = requireSafeRelativePath(path, "Artifacts entry");
         const source = `${projectRootUri}/${relativePath}`;
         if (!fs.exists(source)) {
-            task.log("warning", `CANoe artifact is missing: ${relativePath}`);
+            task.warning(`CANoe artifact is missing: ${relativePath}`);
             continue;
         }
         const destination = `artifact://canoe/${relativePath}`;
         fs.copy(source, destination, true);
-        collected.push(destination);
-        task.artifact(destination, { name: baseName(relativePath) });
+        task.publish(source === finalReportUri ? "REPORT_URI" : `ARTIFACT:${relativePath}`,
+                     destination,
+                     baseName(relativePath),
+                     relativePath.toLowerCase().endsWith(".json")
+                         ? "application/json" : "application/octet-stream");
     }
-    task.output("ARTIFACTS", collected);
-    task.progress(100, "Flash artifacts collected");
+    task.progress(100);
 }
 
 export async function cleanup() {
     if (mockMode) {
         measurementRunning = false;
-        task.output("CLEANUP_COMPLETED", true);
         return;
     }
     try {
@@ -596,14 +577,14 @@ export async function cleanup() {
             flashModule.call("Stop");
         }
     } catch (error) {
-        task.log("warning", `Unable to stop FlashDownLoad: ${error.message}`);
+        task.warning(`Unable to stop FlashDownLoad: ${error.message}`);
     }
     try {
         if (measurement !== null && measurementRunning && measurement.get("Running") === true) {
             measurement.call("Stop");
         }
     } catch (error) {
-        task.log("warning", `Unable to stop CANoe Measurement: ${error.message}`);
+        task.warning(`Unable to stop CANoe Measurement: ${error.message}`);
     }
     try {
         if (application !== null
@@ -611,7 +592,7 @@ export async function cleanup() {
             application.call("Quit");
         }
     } catch (error) {
-        task.log("warning", `Unable to quit CANoe: ${error.message}`);
+        task.warning(`Unable to quit CANoe: ${error.message}`);
     }
     if (canoeProcess !== null) {
         try {
@@ -619,7 +600,7 @@ export async function cleanup() {
                 cli.terminate(canoeProcess, 3000);
             }
         } catch (error) {
-            task.log("warning", `Unable to terminate CANoe process: ${error.message}`);
+            task.warning(`Unable to terminate CANoe process: ${error.message}`);
         }
         try {
             cli.release(canoeProcess);
@@ -643,5 +624,4 @@ export async function cleanup() {
     measurementRunning = false;
     launchedByTask = false;
     flashStarted = false;
-    task.output("CLEANUP_COMPLETED", true);
 }

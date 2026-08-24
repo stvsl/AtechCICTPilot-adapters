@@ -492,7 +492,6 @@ function configureVtest() {
     if (testConfigurationReport !== undefined && testConfigurationReport !== null) {
         reportObjects.push(testConfigurationReport);
     }
-    task.output("SELECTED_TEST_CASES", selected);
 }
 
 function configureCommunication() {
@@ -558,7 +557,6 @@ function configureCommunication() {
         throw new Error("No enabled CANoe communication test case matches TEST_CASE_IDS");
     }
     expectedResultCount = selected.length;
-    task.output("SELECTED_TEST_CASES", selected);
 }
 
 async function waitUntil(predicate, timeoutMs, description) {
@@ -654,21 +652,17 @@ export async function prepare(projectPackage) {
     if (requestedIds.length === 0 && Array.isArray(projectDescriptor.TestCaseIds)) {
         requestedIds = projectDescriptor.TestCaseIds.map((id) => String(id));
     }
-    task.output("TEST_MODE", testMode);
-    task.output("TEST_SCRIPT_COUNT", scriptUris.length);
-    task.output("TEST_CASE_IDS", requestedIds);
-    task.output("CANOE_CONFIGURATION", configurationUri);
-    task.progress(5, "CANoe test project prepared");
+    task.progress(5);
 }
 
 export async function launch() {
     if (mockMode) {
-        task.progress(8, "CANoe simulator ready");
+        task.progress(8);
         return;
     }
     if (Boolean(task.option("AttachExisting", false))) {
         launchedByTask = false;
-        task.log("info", "Attaching to an existing CANoe process");
+        task.info("Attaching to an existing CANoe process");
         return;
     }
     const executable = task.device("CANOE_SOFTWARE_POSITION");
@@ -677,7 +671,6 @@ export async function launch() {
         arguments: []
     });
     launchedByTask = true;
-    task.output("CANOE_PROCESS", canoeProcess);
     await task.delay(1500);
 }
 
@@ -694,7 +687,7 @@ export async function connect() {
 export async function startMeasurement() {
     if (mockMode) {
         measurementRunning = true;
-        task.progress(10, "CANoe Measurement is running");
+        task.progress(10);
         return;
     }
     openConfiguration();
@@ -705,12 +698,12 @@ export async function startMeasurement() {
     await waitUntil(() => measurement.get("Running") === true,
                     120000, "CANoe Measurement to start");
     measurementRunning = true;
-    task.progress(10, "CANoe Measurement is running");
+    task.progress(10);
 }
 
 export async function configure() {
     if (mockMode) {
-        task.progress(15, "CANoe test units configured");
+        task.progress(15);
         return;
     }
     openConfiguration();
@@ -719,7 +712,7 @@ export async function configure() {
     } else {
         configureVtest();
     }
-    task.progress(15, "CANoe test units configured");
+    task.progress(15);
 }
 
 export async function execute() {
@@ -739,9 +732,7 @@ export async function execute() {
             results
         }, null, 2));
         reportUri = `${projectRootUri}/mock-report.json`;
-        task.output("TEST_RESULTS", results);
-        task.output("VERDICT", "passed");
-        task.progress(95, "CANoe test execution passed");
+        task.progress(95);
         return;
     }
     const started = Date.now();
@@ -758,9 +749,7 @@ export async function execute() {
                 || results.length < expectedResultCount) {
             task.checkCancelled();
             results = collectVerdicts();
-            task.progress(Math.min(90, 20 + results.length * 5),
-                          `CANoe test cases observed: ${results.length}`,
-                          { count: results.length });
+            task.progress(Math.min(90, 20 + results.length * 5));
             if (Date.now() - started >= timeout) {
                 throw new Error("Timed out waiting for CANoe communication test modules");
             }
@@ -776,9 +765,7 @@ export async function execute() {
             task.checkCancelled();
             results = collectVerdicts();
             const progress = results.length === 0 ? 20 : Math.min(90, 20 + results.length * 5);
-            task.progress(progress, `CANoe test cases observed: ${results.length}`, {
-                count: results.length
-            });
+            task.progress(progress);
             if (!moduleRunning() && results.length >= expectedResultCount) {
                 break;
             }
@@ -791,13 +778,10 @@ export async function execute() {
     results = collectVerdicts();
     reportUri = reportPathUri();
     const passed = results.length > 0 && results.every((item) => item.passed);
-    task.output("TEST_RESULTS", results);
-    task.output("REPORT_URI", reportUri);
-    task.output("VERDICT", passed ? "passed" : "failed");
     if (!passed) {
         throw new Error("One or more CANoe test cases failed");
     }
-    task.progress(95, "CANoe test execution passed");
+    task.progress(95);
 }
 
 export async function collectArtifacts() {
@@ -812,26 +796,26 @@ export async function collectArtifacts() {
             }
         }
     }
-    const collected = [];
     for (const path of paths) {
         const relative = requireSafeRelativePath(path, "Artifacts entry");
         const source = `${projectRootUri}/${relative}`;
         if (!fs.exists(source)) {
-            task.log("warning", `CANoe test artifact is missing: ${relative}`);
+            task.warning(`CANoe test artifact is missing: ${relative}`);
             continue;
         }
         const destination = `artifact://canoe-test/${relative}`;
         fs.copy(source, destination, true);
-        task.artifact(destination, { name: baseName(relative) });
-        collected.push(destination);
+        task.publish(source === reportUri ? "REPORT_URI" : `ARTIFACT:${relative}`,
+                     destination,
+                     baseName(relative),
+                     relative.toLowerCase().endsWith(".json")
+                         ? "application/json" : "application/octet-stream");
     }
-    task.output("ARTIFACTS", collected);
-    task.progress(100, "CANoe test artifacts collected");
+    task.progress(100);
 }
 
 export async function cleanup() {
     if (mockMode) {
-        task.output("CLEANUP_COMPLETED", true);
         return;
     }
     try {
@@ -844,14 +828,14 @@ export async function cleanup() {
             }
         }
     } catch (error) {
-        task.log("warning", `Unable to stop CANoe TestConfiguration: ${error.message}`);
+        task.warning(`Unable to stop CANoe TestConfiguration: ${error.message}`);
     }
     try {
         if (measurement !== null && measurementRunning && measurement.get("Running") === true) {
             measurement.call("Stop");
         }
     } catch (error) {
-        task.log("warning", `Unable to stop CANoe Measurement: ${error.message}`);
+        task.warning(`Unable to stop CANoe Measurement: ${error.message}`);
     }
     try {
         if (application !== null
@@ -859,7 +843,7 @@ export async function cleanup() {
             application.call("Quit");
         }
     } catch (error) {
-        task.log("warning", `Unable to quit CANoe: ${error.message}`);
+        task.warning(`Unable to quit CANoe: ${error.message}`);
     }
     if (canoeProcess !== null) {
         try {
@@ -867,7 +851,7 @@ export async function cleanup() {
                 cli.terminate(canoeProcess, 3000);
             }
         } catch (error) {
-            task.log("warning", `Unable to terminate CANoe process: ${error.message}`);
+            task.warning(`Unable to terminate CANoe process: ${error.message}`);
         }
         try {
             cli.release(canoeProcess);
@@ -896,5 +880,4 @@ export async function cleanup() {
     measurementRunning = false;
     testStarted = false;
     launchedByTask = false;
-    task.output("CLEANUP_COMPLETED", true);
 }
