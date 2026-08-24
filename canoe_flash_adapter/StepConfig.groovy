@@ -17,16 +17,16 @@ stages {
             runjs("scripts/canoe_flash.js", "connect")
         }
     }
+    stage("校验刷写契约") {
+        timeout(120000)
+        steps {
+            runjs("scripts/canoe_flash.js", "validateContract")
+        }
+    }
     stage("打开配置并启动测量") {
         timeout(120000)
         steps {
             runjs("scripts/canoe_flash.js", "startMeasurement")
-        }
-    }
-    stage("校验刷写契约") {
-        timeout(30000)
-        steps {
-            runjs("scripts/canoe_flash.js", "validateContract")
         }
     }
     stage("执行刷写并验证") {

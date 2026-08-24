@@ -52,6 +52,14 @@
             "type": "file",
             "fileExtension": ".bin|.s7|.s19|.hex|.elf",
             "required": true
+        },
+        {
+            "id": "FLASH_PARAMETERS",
+            "nameCN": "刷写参数（JSON）",
+            "nameEN": "Flash Parameters (JSON)",
+            "type": "file",
+            "fileExtension": ".json",
+            "required": false
         }
     ],
     "OnDeviceProperty": [

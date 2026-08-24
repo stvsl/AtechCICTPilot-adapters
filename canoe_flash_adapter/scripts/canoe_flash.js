@@ -3,62 +3,304 @@ import * as fs from "@atech/fs";
 import * as cli from "@atech/cli";
 import * as task from "@atech/task";
 
+/*
+ * CANoe's Automation model is intentionally kept in this adapter. The host
+ * only provides the generic COM/CLI bridge, while the CANoe project owns the
+ * diagnostic and CAPL implementation of the FlashDownLoad test module.
+ */
 const CONTRACT_VERSION = "1.0";
-const COMMAND = Object.freeze({ none: 0, start: 1, cancel: 2, reset: 3 });
-const STATE = Object.freeze({
-    idle: 0,
-    ready: 10,
-    running: 20,
-    verifying: 30,
-    succeeded: 40,
-    failed: 50,
-    cancelled: 60
-});
+const DEFAULT_FLASH_MODULE = "FlashDownLoad";
+const DEFAULT_INPUT_DIRECTORY = "Input";
+const DEFAULT_CONFIGURATION_TIMEOUT_MS = 120000;
+const DEFAULT_FLASH_TIMEOUT_MS = 1800000;
 
 let application = null;
 let measurement = null;
-let flashVariables = null;
+let configuration = null;
+let userFiles = null;
+let flashModule = null;
+let flashReport = null;
+let canoeProcess = null;
 let projectDescriptor = null;
+let projectRootUri = "";
 let configurationUri = "";
 let firmwareUri = "";
+let reportUri = "";
+let inputDirectoryUri = "";
+let flashParameters = {};
 let launchedByTask = false;
+let mockMode = false;
+let measurementRunning = false;
+let flashStarted = false;
 
-function requireRelativePath(path, field) {
-    if (typeof path !== "string" || path.length === 0 || path.includes("\\") || path.startsWith("/") || path.split("/").includes("..")) {
+function requireSafeRelativePath(value, field) {
+    if (typeof value !== "string" || value.length === 0
+            || value.includes("\\") || value.startsWith("/")
+            || value.includes(":")
+            || value.split("/").some((part) => part === "" || part === "." || part === "..")) {
         throw new Error(`${field} must be a safe relative path`);
     }
-    return path;
+    return value;
 }
 
-function fileName(uri) {
-    const parts = uri.split("/");
-    return parts[parts.length - 1];
-}
-
-function variable(name) {
-    if (flashVariables === null) {
-        const system = application.get("System");
-        const namespaces = system.get("Namespaces");
-        const cict = namespaces.item("CICT");
-        const flash = cict.get("Namespaces").item("Flash");
-        flashVariables = flash.get("Variables");
+function baseName(uri) {
+    const parts = String(uri).split("/");
+    const name = parts[parts.length - 1];
+    if (!name || name === "." || name === "..") {
+        throw new Error(`Unable to determine a file name from ${uri}`);
     }
-    return flashVariables.item(name);
+    return name;
 }
 
-function getVariable(name) {
-    return variable(name).get("Value");
+function clamp(value, lower, upper) {
+    return Math.max(lower, Math.min(upper, Number(value)));
 }
 
-function setVariable(name, value) {
-    variable(name).set("Value", value);
+function optionalRequirement(key) {
+    try {
+        return task.requirement(key);
+    } catch (_) {
+        return "";
+    }
+}
+
+function readJson(uri, field) {
+    if (!uri || !fs.exists(uri)) {
+        throw new Error(`${field} does not exist`);
+    }
+    let value;
+    try {
+        value = JSON.parse(fs.readText(uri));
+    } catch (error) {
+        throw new Error(`${field} is not valid JSON: ${error.message}`);
+    }
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error(`${field} must contain a JSON object`);
+    }
+    return value;
+}
+
+function escapeXml(value) {
+    return String(value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/\"/g, "&quot;")
+        .replace(/'/g, "&apos;");
+}
+
+function applySystemVariables(uri, values) {
+    if (!uri || Object.keys(values).length === 0) {
+        return;
+    }
+    let xml = fs.readText(uri);
+    let changed = 0;
+    xml = xml.replace(/<variable\b[^>]*>/gi, (tag) => {
+        const nameMatch = tag.match(/\bname\s*=\s*([\"'])(.*?)\1/i);
+        if (!nameMatch || !Object.prototype.hasOwnProperty.call(values, nameMatch[2])) {
+            return tag;
+        }
+        const value = escapeXml(values[nameMatch[2]]);
+        const startValue = new RegExp("\\bstartValue\\s*=\\s*([\\\"'])(.*?)\\1", "i");
+        changed += 1;
+        if (startValue.test(tag)) {
+            return tag.replace(startValue, `startValue=\"${value}\"`);
+        }
+        return tag.replace(/\s*\/?>(\s*)$/, ` startValue=\"${value}\"$&`);
+    });
+    if (changed > 0) {
+        fs.writeText(uri, xml);
+        task.log("info", `Updated ${changed} CANoe system variable(s)`, {
+            file: uri
+        });
+    }
+}
+
+function findFile(rootUri, predicate) {
+    if (!rootUri || !fs.exists(rootUri)) {
+        return "";
+    }
+    const entries = fs.list(rootUri, true);
+    for (const entry of entries) {
+        if (entry.type === "file" && predicate(entry)) {
+            return entry.uri;
+        }
+    }
+    return "";
+}
+
+function descriptorPath(name, fallback) {
+    const value = projectDescriptor && projectDescriptor[name];
+    return value === undefined || value === null || value === "" ? fallback : value;
+}
+
+function normalizeName(value) {
+    return String(value).trim().toLowerCase();
+}
+
+function collectionCount(collection) {
+    try {
+        const count = Number(collection.get("Count"));
+        return Number.isFinite(count) && count >= 0 ? Math.floor(count) : 0;
+    } catch (_) {
+        return 0;
+    }
+}
+
+function collectionItem(collection, index) {
+    try {
+        return collection.item(index + 1);
+    } catch (_) {
+        return collection.item(index);
+    }
+}
+
+function collectionItems(collection) {
+    const result = [];
+    const count = collectionCount(collection);
+    for (let index = 0; index < count; ++index) {
+        try {
+            result.push(collectionItem(collection, index));
+        } catch (_) {
+            break;
+        }
+    }
+    return result;
+}
+
+function findNamed(collection, expectedName) {
+    const wanted = normalizeName(expectedName);
+    for (const item of collectionItems(collection)) {
+        try {
+            if (normalizeName(item.get("Name")) === wanted) {
+                return item;
+            }
+        } catch (_) {
+            // The missing-module error below contains the actionable name.
+        }
+    }
+    return null;
+}
+
+function optionalProperty(object, name) {
+    try {
+        return object.get(name);
+    } catch (_) {
+        return undefined;
+    }
+}
+
+function stateIsTerminal(state) {
+    const value = normalizeName(state);
+    return value === "0" || value === "stopped" || value === "finished"
+        || value === "completed" || value === "passed" || value === "failed"
+        || value === "cstopped" || value === "cfinished"
+        || value === "ccompleted" || value === "cpassed" || value === "cfailed"
+        || value === "cverdictpassed" || value === "cverdictfailed";
+}
+
+function moduleFinished() {
+    if (!flashStarted) {
+        return false;
+    }
+    const running = optionalProperty(flashModule, "Running");
+    if (running !== undefined) {
+        return running !== true;
+    }
+    const state = optionalProperty(flashModule, "State");
+    if (state !== undefined) {
+        return stateIsTerminal(state);
+    }
+    const report = reportPathUri();
+    return Boolean(report && fs.exists(report));
+}
+
+function moduleProgress() {
+    const progress = optionalProperty(flashModule, "Progress");
+    if (progress === undefined) {
+        return 0;
+    }
+    const value = Number(progress);
+    return Number.isFinite(value) ? clamp(value, 0, 100) : 0;
+}
+
+function moduleVerdict() {
+    const verdict = optionalProperty(flashModule, "Verdict");
+    return verdict === undefined ? "" : normalizeName(verdict);
+}
+
+function verdictPassed(verdict) {
+    const value = normalizeName(verdict);
+    return value === "passed" || value === "pass" || value === "cverdictpassed"
+        || value === "0";
+}
+
+function nativePathToWorkspaceUri(nativePath) {
+    if (!nativePath || !projectRootUri) {
+        return "";
+    }
+    const root = fs.nativePath(projectRootUri).replace(/\\/g, "/").replace(/\/$/, "");
+    const candidate = String(nativePath).replace(/\\/g, "/");
+    const lowerRoot = root.toLowerCase();
+    const lowerCandidate = candidate.toLowerCase();
+    if (lowerCandidate !== lowerRoot && !lowerCandidate.startsWith(`${lowerRoot}/`)) {
+        return "";
+    }
+    const relative = candidate.substring(root.length).replace(/^\/+/, "");
+    return relative ? `${projectRootUri}/${relative}` : projectRootUri;
+}
+
+function reportPathUri() {
+    if (reportUri && fs.exists(reportUri)) {
+        return reportUri;
+    }
+    if (flashReport === null) {
+        return "";
+    }
+    const native = optionalProperty(flashReport, "LastWrittenFullName")
+        || optionalProperty(flashReport, "LastWrittenFullPath");
+    return nativePathToWorkspaceUri(native);
+}
+
+function expectedVersion() {
+    if (projectDescriptor && projectDescriptor.ExpectedVersion) {
+        return String(projectDescriptor.ExpectedVersion);
+    }
+    if (flashParameters.ExpectedVersion) {
+        return String(flashParameters.ExpectedVersion);
+    }
+    const name = baseName(firmwareUri);
+    const withoutExtension = name.replace(/\.[^.]+$/, "");
+    const separator = withoutExtension.lastIndexOf("_");
+    return separator >= 0 ? withoutExtension.substring(separator + 1) : withoutExtension;
+}
+
+function extractReportedVersion(uri) {
+    if (!uri || !fs.exists(uri)) {
+        return "";
+    }
+    const text = fs.readText(uri);
+    const patterns = [
+        /softwareVer\s*[:=]\s*[\"']?([^\"'\s<]+)/i,
+        /ECUSoftwareVersionNumber\s*[=:>]\s*[\"']?([^\"'\s<]+)/i,
+        /F189\s*[:=]\s*[\"']?([^\"'\s<]+)/i,
+        /software[_ ]?version\s*[:=]\s*[\"']?([^\"'\s<]+)/i
+    ];
+    for (const pattern of patterns) {
+        const match = text.match(pattern);
+        if (match && match[1]) {
+            return match[1].trim();
+        }
+    }
+    return "";
 }
 
 async function waitUntil(predicate, timeoutMs, description, ignoreCancellation = false) {
     const started = Date.now();
     while (!predicate()) {
-        if (!ignoreCancellation)
+        if (!ignoreCancellation) {
             task.checkCancelled();
+        }
         if (Date.now() - started >= timeoutMs) {
             throw new Error(`Timed out waiting for ${description}`);
         }
@@ -66,152 +308,340 @@ async function waitUntil(predicate, timeoutMs, description, ignoreCancellation =
     }
 }
 
+function release(object) {
+    if (object === null) {
+        return;
+    }
+    try {
+        object.release();
+    } catch (_) {
+        // The host also releases all remaining handles after the stage.
+    }
+}
+
+function openConfiguration() {
+    if (application === null) {
+        throw new Error("CANoe Automation is not connected");
+    }
+    if (configuration !== null) {
+        return;
+    }
+    try {
+        application.call("Open", fs.nativePath(configurationUri), true, true);
+    } catch (_) {
+        application.call("Open", fs.nativePath(configurationUri));
+    }
+    configuration = application.get("Configuration");
+    const openResult = optionalProperty(configuration, "OpenConfigurationResult")
+        || optionalProperty(application, "OpenConfigurationResult");
+    if (openResult !== undefined && openResult !== null) {
+        const resultCode = optionalProperty(openResult, "result");
+        if (resultCode !== undefined && Number(resultCode) !== 0) {
+            release(openResult);
+            throw new Error(`CANoe configuration open failed with result ${resultCode}`);
+        }
+        release(openResult);
+    }
+}
+
 export async function prepare(projectPackage, softwarePackage) {
-    task.log("info", "Validating and extracting the CANoe project package");
-    fs.extractZip(projectPackage, "workspace://canoe-project");
-    const descriptorUri = "workspace://canoe-project/canoe-project.json";
+    projectRootUri = "workspace://canoe-project";
+    configurationUri = "";
+    firmwareUri = "";
+    reportUri = "";
+    projectDescriptor = null;
+    flashParameters = {};
+    inputDirectoryUri = "";
+    flashStarted = false;
+    mockMode = Boolean(task.option("MockAutomation", false));
+
+    fs.extractZip(projectPackage, projectRootUri);
+    const descriptorUri = `${projectRootUri}/canoe-project.json`;
     if (!fs.exists(descriptorUri)) {
         throw new Error("CANOE_PROJECT must contain canoe-project.json");
     }
-    projectDescriptor = JSON.parse(fs.readText(descriptorUri));
-    if (projectDescriptor.ContractVersion !== CONTRACT_VERSION) {
+    projectDescriptor = readJson(descriptorUri, "canoe-project.json");
+    if (Array.isArray(projectDescriptor)) {
+        throw new Error("canoe-project.json must contain an object");
+    }
+    if (String(projectDescriptor.ContractVersion) !== CONTRACT_VERSION) {
         throw new Error(`Unsupported canoe-project.json contract: ${projectDescriptor.ContractVersion}`);
     }
-    const configPath = requireRelativePath(projectDescriptor.Configuration, "Configuration");
-    configurationUri = `workspace://canoe-project/${configPath}`;
+
+    const configurationPath = requireSafeRelativePath(
+        descriptorPath("Configuration", ""), "Configuration");
+    configurationUri = `${projectRootUri}/${configurationPath}`;
     if (!fs.exists(configurationUri)) {
-        throw new Error(`CANoe configuration is missing: ${configPath}`);
+        throw new Error(`CANoe configuration is missing: ${configurationPath}`);
     }
-    firmwareUri = `workspace://firmware/${fileName(softwarePackage)}`;
-    fs.copy(softwarePackage, firmwareUri);
-    task.progress(5, "Inputs prepared");
+
+    const inputPath = requireSafeRelativePath(
+        descriptorPath("InputDirectory", DEFAULT_INPUT_DIRECTORY), "InputDirectory");
+    inputDirectoryUri = `${projectRootUri}/${inputPath}`;
+    if (!fs.exists(inputDirectoryUri)) {
+        fs.mkdir(inputDirectoryUri);
+    }
+    const firmwareName = baseName(softwarePackage);
+    firmwareUri = `${inputDirectoryUri}/${firmwareName}`;
+    fs.copy(softwarePackage, firmwareUri, true);
+
+    const parametersUri = optionalRequirement("FLASH_PARAMETERS");
+    if (parametersUri) {
+        const parameters = readJson(parametersUri, "FLASH_PARAMETERS");
+        const variables = parameters.sysVariables || parameters.SysVariables
+            || parameters.variables || parameters.Variables;
+        flashParameters = variables && typeof variables === "object"
+            ? Object.assign({}, parameters, variables) : parameters;
+    }
+    const variablePath = descriptorPath("SystemVariableFile", "");
+    const variableUri = variablePath
+        ? `${projectRootUri}/${requireSafeRelativePath(variablePath, "SystemVariableFile")}`
+        : (() => {
+            const variableDirectory = descriptorPath("SystemVariableDirectory", "");
+            const directoryUri = variableDirectory
+                ? `${projectRootUri}/${requireSafeRelativePath(variableDirectory, "SystemVariableDirectory")}`
+                : projectRootUri;
+            return findFile(directoryUri,
+                            (entry) => entry.name.toLowerCase().endsWith(".vsysvar"));
+        })();
+    if (variableUri && !fs.exists(variableUri)) {
+        throw new Error(`CANoe system variable file is missing: ${variablePath}`);
+    }
+    if (variableUri && !Object.prototype.hasOwnProperty.call(flashParameters, "fileName")) {
+        flashParameters.fileName = firmwareName;
+    }
+    applySystemVariables(variableUri, flashParameters);
+    task.output("FIRMWARE_URI", firmwareUri);
+    task.output("CANOE_CONFIGURATION", configurationUri);
+    task.log("info", "CANoe project prepared", {
+        configuration: configurationUri,
+        firmware: firmwareUri,
+        inputDirectory: inputDirectoryUri
+    });
+    task.progress(5, "CANoe project prepared");
 }
 
 export async function launch() {
-    if (task.option("MockAutomation", false)) {
-        task.log("info", "Using the in-process CANoe Automation simulator");
+    if (mockMode) {
+        task.log("info", "Using the CANoe Automation simulator");
+        task.progress(8, "CANoe simulator ready");
+        return;
+    }
+    if (Boolean(task.option("AttachExisting", false))) {
+        launchedByTask = false;
+        task.log("info", "Attaching to an existing CANoe process");
         return;
     }
     const executable = task.device("CANOE_SOFTWARE_POSITION");
-    const process = cli.start({ executable, arguments: [] });
+    canoeProcess = cli.start({
+        executable,
+        arguments: []
+    });
     launchedByTask = true;
-    task.output("CANOE_PROCESS", process);
-    task.log("info", `CANoe started with PID ${process.pid}`);
+    task.output("CANOE_PROCESS", canoeProcess);
+    task.log("info", `CANoe started with PID ${canoeProcess.pid}`);
     await task.delay(1500);
 }
 
 export async function connect() {
-    const attachExisting = task.option("AttachExisting", false);
-    application = attachExisting ? com.getActive("CANoe.Application") : com.create("CANoe.Application");
-    task.log("info", attachExisting ? "Attached to an existing CANoe instance" : "Connected to CANoe Automation");
+    if (mockMode) {
+        return;
+    }
+    const attachExisting = Boolean(task.option("AttachExisting", false));
+    application = attachExisting
+        ? com.getActive("CANoe.Application")
+        : com.create("CANoe.Application");
+    task.log("info", attachExisting
+        ? "Attached to an existing CANoe instance"
+        : "Connected to CANoe Automation");
 }
 
 export async function startMeasurement() {
-    application.call("Open", fs.nativePath(configurationUri));
+    if (mockMode) {
+        measurementRunning = true;
+        task.progress(10, "CANoe Measurement is running");
+        return;
+    }
+    openConfiguration();
     measurement = application.get("Measurement");
-    if (!measurement.get("Running")) {
+    if (measurement.get("Running") !== true) {
         measurement.call("Start");
     }
-    await waitUntil(() => measurement.get("Running") === true, 30000, "CANoe Measurement to start");
+    await waitUntil(() => measurement.get("Running") === true,
+                    DEFAULT_CONFIGURATION_TIMEOUT_MS,
+                    "CANoe Measurement to start");
+    measurementRunning = true;
     task.progress(10, "CANoe Measurement is running");
 }
 
 export async function validateContract() {
-    const actualVersion = String(getVariable("ContractVersion"));
-    if (actualVersion !== CONTRACT_VERSION) {
-        throw new Error(`CICT::Flash contract mismatch: expected ${CONTRACT_VERSION}, got ${actualVersion}`);
+    if (mockMode) {
+        task.output("FLASH_MODULE", DEFAULT_FLASH_MODULE);
+        task.progress(15, "FlashDownLoad module is ready");
+        return;
     }
-    const state = Number(getVariable("State"));
-    if (state !== STATE.idle && state !== STATE.ready) {
-        throw new Error(`CICT::Flash is busy (state ${state})`);
+    openConfiguration();
+    userFiles = configuration.get("UserFiles");
+    const setup = configuration.get("TestSetup");
+    const environments = setup.get("TestEnvironments");
+    const environment = collectionItems(environments)[0];
+    if (environment === undefined) {
+        throw new Error("CANoe configuration does not contain a TestEnvironment");
     }
-    task.progress(15, "CICT::Flash contract is ready");
+    const modules = environment.get("TestModules");
+    const moduleName = descriptorPath("FlashModule", DEFAULT_FLASH_MODULE);
+    flashModule = findNamed(modules, moduleName);
+    if (flashModule === null) {
+        throw new Error(`CANoe TestModule not found: ${moduleName}`);
+    }
+    flashModule.set("Enabled", true);
+    flashStarted = false;
+    flashReport = optionalProperty(flashModule, "Report");
+    userFiles.call("Add", fs.nativePath(firmwareUri));
+    task.output("FLASH_MODULE", moduleName);
+    task.log("info", `CANoe ${moduleName} module loaded`);
+    task.progress(15, "FlashDownLoad module is ready");
 }
 
 export async function flash() {
-    const requestId = task.id();
-    setVariable("Command", COMMAND.reset);
-    await waitUntil(() => Number(getVariable("State")) === STATE.ready, 10000, "CICT::Flash reset");
-    setVariable("RequestId", requestId);
-    setVariable("FirmwarePath", fs.nativePath(firmwareUri));
-    setVariable("Command", COMMAND.start);
-
-    while (true) {
+    const requestStarted = Date.now();
+    const timeout = Number(projectDescriptor && projectDescriptor.FlashTimeoutMs)
+        || DEFAULT_FLASH_TIMEOUT_MS;
+    if (mockMode) {
+        for (let progress = 20; progress <= 90; progress += 10) {
+            await task.delay(50);
+            task.progress(progress, `FlashDownLoad progress ${progress}%`, { progress });
+        }
+        const version = expectedVersion();
+        task.output("REPORTED_VERSION", version);
+        task.output("EXPECTED_VERSION", version);
+        task.output("VERDICT", "passed");
+        task.progress(96, "ECU flash and verification succeeded");
+        return;
+    }
+    if (flashModule === null) {
+        throw new Error("FlashDownLoad module has not been loaded");
+    }
+    flashModule.set("ExecuteRepeatedly", false);
+    flashModule.call("Start");
+    flashStarted = true;
+    await task.delay(100);
+    while (!moduleFinished()) {
         if (task.isCancelled()) {
-            setVariable("Command", COMMAND.cancel);
-            await waitUntil(() => Number(getVariable("State")) === STATE.cancelled,
-                            10000,
-                            "CICT::Flash cancellation",
-                            true);
-            task.checkCancelled();
-        }
-        const state = Number(getVariable("State"));
-        const progress = Math.max(0, Math.min(100, Number(getVariable("Progress"))));
-        const activeRequestId = String(getVariable("ActiveRequestId"));
-        task.progress(15 + Math.round(progress * 0.8), `CANoe flash state ${state}`, { state, progress, activeRequestId });
-        if (state === STATE.succeeded || state === STATE.failed || state === STATE.cancelled) {
-            const resultCode = Number(getVariable("ResultCode"));
-            const resultMessage = String(getVariable("ResultMessage"));
-            const reportedVersion = String(getVariable("ReportedVersion"));
-            task.output("REQUEST_ID", requestId);
-            task.output("RESULT_CODE", resultCode);
-            task.output("RESULT_MESSAGE", resultMessage);
-            task.output("REPORTED_VERSION", reportedVersion);
-            if (activeRequestId !== requestId || state !== STATE.succeeded || resultCode !== 0) {
-                throw new Error(`Flash failed: state=${state}, code=${resultCode}, message=${resultMessage}`);
+            try {
+                flashModule.call("Stop");
+            } finally {
+                task.checkCancelled();
             }
-            task.progress(96, "ECU flash and verification succeeded");
-            return;
         }
+        if (Date.now() - requestStarted >= timeout) {
+            throw new Error("Timed out waiting for FlashDownLoad to finish");
+        }
+        const progress = moduleProgress();
+        task.progress(15 + Math.round(progress * 0.8),
+                      `FlashDownLoad progress ${Math.round(progress)}%`, { progress });
         await task.delay(500);
     }
+    reportUri = reportPathUri();
+    const reportedVersion = extractReportedVersion(reportUri);
+    const expected = expectedVersion();
+    const verdict = moduleVerdict();
+    task.output("REPORT_URI", reportUri);
+    task.output("REPORTED_VERSION", reportedVersion);
+    task.output("EXPECTED_VERSION", expected);
+    task.output("VERDICT", verdict || (reportedVersion === expected ? "passed" : "failed"));
+    if (!reportedVersion || reportedVersion !== expected
+            || (verdict && !verdictPassed(verdict))) {
+        throw new Error(`Flash verification failed: expected ${expected}, got ${reportedVersion || "<empty>"}`);
+    }
+    task.progress(96, "ECU flash and verification succeeded");
 }
 
 export async function collectArtifacts() {
     const collected = [];
-    const artifacts = Array.isArray(projectDescriptor.Artifacts) ? projectDescriptor.Artifacts : [];
-    for (const entry of artifacts) {
-        const relativePath = requireRelativePath(entry, "Artifacts entry");
-        const source = `workspace://canoe-project/${relativePath}`;
-        if (fs.exists(source)) {
-            const destination = `artifact://${fileName(relativePath)}`;
-            fs.copy(source, destination);
-            collected.push(destination);
-            task.artifact(destination);
+    const artifactPaths = Array.isArray(projectDescriptor && projectDescriptor.Artifacts)
+        ? projectDescriptor.Artifacts.slice() : [];
+    const finalReportUri = reportPathUri();
+    const projectPrefix = `${projectRootUri}/`;
+    if (finalReportUri && finalReportUri.startsWith(projectPrefix)) {
+        const relativeReport = finalReportUri.substring(projectPrefix.length);
+        if (!artifactPaths.includes(relativeReport)) {
+            artifactPaths.push(relativeReport);
         }
+    }
+    for (const path of artifactPaths) {
+        const relativePath = requireSafeRelativePath(path, "Artifacts entry");
+        const source = `${projectRootUri}/${relativePath}`;
+        if (!fs.exists(source)) {
+            task.log("warning", `CANoe artifact is missing: ${relativePath}`);
+            continue;
+        }
+        const destination = `artifact://canoe/${relativePath}`;
+        fs.copy(source, destination, true);
+        collected.push(destination);
+        task.artifact(destination, { name: baseName(relativePath) });
     }
     task.output("ARTIFACTS", collected);
     task.progress(100, "Flash artifacts collected");
 }
 
 export async function cleanup() {
-    if (application === null) {
+    if (mockMode) {
+        measurementRunning = false;
+        task.output("CLEANUP_COMPLETED", true);
         return;
     }
     try {
-        const state = Number(getVariable("State"));
-        if (state === STATE.running || state === STATE.verifying) {
-            setVariable("Command", COMMAND.cancel);
-            await task.delay(500, true);
+        if (flashModule !== null && !moduleFinished()) {
+            flashModule.call("Stop");
         }
     } catch (error) {
-        task.log("warning", `Unable to cancel active flash during cleanup: ${error.message}`);
+        task.log("warning", `Unable to stop FlashDownLoad: ${error.message}`);
     }
     try {
-        if (measurement !== null && measurement.get("Running")) {
+        if (measurement !== null && measurementRunning && measurement.get("Running") === true) {
             measurement.call("Stop");
         }
     } catch (error) {
         task.log("warning", `Unable to stop CANoe Measurement: ${error.message}`);
     }
     try {
-        if (launchedByTask || task.option("QuitAttachedInstance", false)) {
+        if (application !== null
+                && (launchedByTask || Boolean(task.option("QuitAttachedInstance", false)))) {
             application.call("Quit");
         }
-    } finally {
-        application.release();
-        application = null;
-        measurement = null;
-        flashVariables = null;
+    } catch (error) {
+        task.log("warning", `Unable to quit CANoe: ${error.message}`);
     }
+    if (canoeProcess !== null) {
+        try {
+            if (cli.isRunning(canoeProcess)) {
+                cli.terminate(canoeProcess, 3000);
+            }
+        } catch (error) {
+            task.log("warning", `Unable to terminate CANoe process: ${error.message}`);
+        }
+        try {
+            cli.release(canoeProcess);
+        } catch (_) {
+            // The host will reclaim an unreleased process handle.
+        }
+    }
+    release(flashReport);
+    release(flashModule);
+    release(userFiles);
+    release(configuration);
+    release(measurement);
+    release(application);
+    application = null;
+    measurement = null;
+    configuration = null;
+    userFiles = null;
+    flashModule = null;
+    flashReport = null;
+    canoeProcess = null;
+    measurementRunning = false;
+    launchedByTask = false;
+    flashStarted = false;
+    task.output("CLEANUP_COMPLETED", true);
 }
