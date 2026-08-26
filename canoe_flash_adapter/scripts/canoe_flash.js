@@ -376,6 +376,23 @@ async function openConfiguration() {
                 throw error;
             }
             lastError = error;
+
+            // CANoe may have accepted Open and only reported a transient COM
+            // error while its Automation server was still initializing. In
+            // that case a second Open call can crash CANoe; adopt the
+            // configuration that is already being loaded instead.
+            let opened = null;
+            try {
+                opened = application.get("Configuration");
+            } catch (_) {
+                // The Configuration property is unavailable until CANoe has
+                // created the object; continue waiting in that case.
+            }
+            if (opened !== null && opened !== undefined) {
+                configuration = opened;
+                checkOpenResult();
+                return;
+            }
         }
 
         if (Date.now() - started >= CANOE_OPEN_TIMEOUT_MS) {

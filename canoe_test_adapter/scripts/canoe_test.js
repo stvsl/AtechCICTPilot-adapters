@@ -36,6 +36,10 @@ let testStarted = false;
 let expectedResultCount = 0;
 let useProjectTestSetup = false;
 
+function debug(message) {
+    task.info(`[CANoe debug] ${message}`);
+}
+
 function requireSafeRelativePath(value, field) {
     if (typeof value !== "string" || value.length === 0
             || value.includes("\\") || value.startsWith("/")
@@ -707,6 +711,7 @@ async function openConfiguration() {
         throw new Error("CANoe Automation is not connected");
     }
     if (configuration !== null) {
+        debug("openConfiguration: configuration is already open");
         return;
     }
     // The task workspace is disposable, so CANoe may persist an upgraded
@@ -717,9 +722,11 @@ async function openConfiguration() {
     while (true) {
         task.checkCancelled();
         try {
+            debug(`openConfiguration: calling Application.Open (${configurationUri})`);
             application.call("Open", fs.nativePath(configurationUri), true, false);
             configuration = application.get("Configuration");
             checkOpenResult();
+            debug("openConfiguration: completed");
             return;
         } catch (error) {
             release(configuration);
@@ -728,6 +735,24 @@ async function openConfiguration() {
                 throw error;
             }
             lastError = error;
+
+            // CANoe may have accepted Open and only reported a transient COM
+            // error while its Automation server was still initializing. In
+            // that case a second Open call can crash CANoe; adopt the
+            // configuration that is already being loaded instead.
+            let opened = null;
+            try {
+                opened = application.get("Configuration");
+            } catch (_) {
+                // The Configuration property is unavailable until CANoe has
+                // created the object; continue waiting in that case.
+            }
+            if (opened !== null && opened !== undefined) {
+                configuration = opened;
+                checkOpenResult();
+                debug("openConfiguration: adopted configuration after transient error");
+                return;
+            }
         }
 
         if (Date.now() - started >= CANOE_OPEN_TIMEOUT_MS) {
@@ -743,6 +768,7 @@ async function openConfiguration() {
 }
 
 export async function prepare(projectPackage) {
+    debug("prepare: starting");
     projectRootUri = "workspace://canoe-test/project";
     configurationUri = "";
     reportUri = "";
@@ -760,6 +786,7 @@ export async function prepare(projectPackage) {
     useProjectTestSetup = false;
     mockMode = Boolean(task.option("MockAutomation", false));
 
+    debug("prepare: extracting project package");
     fs.extractZip(projectPackage, projectRootUri);
     const project = loadProject(projectRootUri);
     projectRootUri = project.rootUri;
@@ -799,58 +826,78 @@ export async function prepare(projectPackage) {
     if (requestedIds.length === 0 && Array.isArray(projectDescriptor.TestCaseIds)) {
         requestedIds = projectDescriptor.TestCaseIds.map((id) => String(id));
     }
+    debug(`prepare: completed (mode=${testMode}, requestedCases=${requestedIds.length})`);
     task.progress(5);
 }
 
 export async function launch() {
+    debug("launch: starting");
     if (mockMode) {
+        debug("launch: mock Automation mode selected");
         task.progress(8);
         return;
     }
     if (Boolean(task.option("AttachExisting", false))) {
         launchedByTask = false;
+        debug("launch: using an existing CANoe process");
         task.info("Attaching to an existing CANoe process");
         return;
     }
     const executable = task.device("CANOE_SOFTWARE_POSITION");
+    debug(`launch: starting executable: ${executable}`);
     canoeProcess = cli.start({
         executable,
         // CANoe's COM mode suppresses the disclaimer and other modal dialogs.
         arguments: ["-embedding"]
     });
     launchedByTask = true;
+    debug(`launch: process started (pid=${canoeProcess.pid})`);
     await task.delay(1500);
 }
 
 export async function connect() {
+    debug("connect: starting");
     if (mockMode) {
+        debug("connect: skipped in mock Automation mode");
         return;
     }
     const attachExisting = Boolean(task.option("AttachExisting", false));
+    debug(attachExisting
+        ? "connect: calling com.getActive(CANoe.Application)"
+        : "connect: calling com.create(CANoe.Application)");
     application = attachExisting
         ? com.getActive("CANoe.Application")
         : com.create("CANoe.Application");
+    debug("connect: completed");
 }
 
 export async function startMeasurement() {
+    debug("startMeasurement: starting");
     if (mockMode) {
         measurementRunning = true;
+        debug("startMeasurement: mock measurement marked running");
         task.progress(10);
         return;
     }
     await openConfiguration();
     measurement = application.get("Measurement");
     if (measurement.get("Running") !== true) {
+        debug("startMeasurement: calling Measurement.Start");
         measurement.call("Start");
+    } else {
+        debug("startMeasurement: measurement is already running");
     }
     await waitUntil(() => measurement.get("Running") === true,
                     120000, "CANoe Measurement to start");
     measurementRunning = true;
+    debug("startMeasurement: completed");
     task.progress(10);
 }
 
 export async function configure() {
+    debug(`configure: starting (mode=${testMode})`);
     if (mockMode) {
+        debug("configure: skipped in mock Automation mode");
         task.progress(15);
         return;
     }
@@ -862,10 +909,12 @@ export async function configure() {
     } else {
         configureVtest();
     }
+    debug(`configure: completed (mode=${testMode})`);
     task.progress(15);
 }
 
 export async function execute() {
+    debug(`execute: starting (mode=${testMode}, expectedResults=${expectedResultCount})`);
     const timeout = Number(projectDescriptor && projectDescriptor.TestTimeoutMs)
         || DEFAULT_TEST_TIMEOUT_MS;
     if (mockMode) {
@@ -882,6 +931,7 @@ export async function execute() {
             results
         }, null, 2));
         reportUri = `${projectRootUri}/mock-report.json`;
+        debug(`execute: mock execution completed (results=${results.length})`);
         task.progress(95);
         return;
     }
@@ -891,6 +941,7 @@ export async function execute() {
             throw new Error("No CANoe communication test modules have been configured");
         }
         for (const module of activeCommunicationModules) {
+            debug("execute: starting communication test module");
             module.set("ExecuteRepeatedly", false);
             module.call("Start");
             testStarted = true;
@@ -909,6 +960,7 @@ export async function execute() {
         if (testConfiguration === null) {
             throw new Error("CANoe TestConfiguration has not been configured");
         }
+        debug("execute: calling TestConfiguration.Start");
         testConfiguration.call("Start");
         testStarted = true;
         while (moduleRunning() || results.length < expectedResultCount) {
@@ -927,6 +979,7 @@ export async function execute() {
     }
     results = collectVerdicts();
     reportUri = reportPathUri();
+    debug(`execute: completed (results=${results.length})`);
     const passed = results.length > 0 && results.every((item) => item.passed);
     if (!passed) {
         throw new Error("One or more CANoe test cases failed");
@@ -935,6 +988,7 @@ export async function execute() {
 }
 
 export async function collectArtifacts() {
+    debug("collectArtifacts: starting");
     const paths = Array.isArray(projectDescriptor && projectDescriptor.Artifacts)
         ? projectDescriptor.Artifacts.slice() : [];
     const prefix = `${projectRootUri}/`;
@@ -961,19 +1015,24 @@ export async function collectArtifacts() {
                      relative.toLowerCase().endsWith(".json")
                          ? "application/json" : "application/octet-stream");
     }
+    debug(`collectArtifacts: completed (paths=${paths.length})`);
     task.progress(100);
 }
 
 export async function cleanup() {
+    debug(`cleanup: starting (measurementRunning=${measurementRunning}, testStarted=${testStarted}, launchedByTask=${launchedByTask})`);
     if (mockMode) {
+        debug("cleanup: skipped in mock Automation mode");
         return;
     }
     try {
         if (testConfiguration !== null && testStarted) {
+            debug("cleanup: calling TestConfiguration.Stop");
             testConfiguration.call("Stop");
         }
         for (const module of activeCommunicationModules) {
             if (testStarted) {
+                debug("cleanup: stopping communication test module");
                 module.call("Stop");
             }
         }
@@ -982,6 +1041,7 @@ export async function cleanup() {
     }
     try {
         if (measurement !== null && measurementRunning && measurement.get("Running") === true) {
+            debug("cleanup: calling Measurement.Stop");
             measurement.call("Stop");
         }
     } catch (error) {
@@ -990,6 +1050,7 @@ export async function cleanup() {
     try {
         if (application !== null
                 && (launchedByTask || Boolean(task.option("QuitAttachedInstance", false)))) {
+            debug("cleanup: calling Application.Quit");
             application.call("Quit");
         }
     } catch (error) {
@@ -998,6 +1059,7 @@ export async function cleanup() {
     if (canoeProcess !== null) {
         try {
             if (cli.isRunning(canoeProcess)) {
+                debug(`cleanup: terminating process (pid=${canoeProcess.pid})`);
                 cli.terminate(canoeProcess, 3000);
             }
         } catch (error) {
@@ -1031,4 +1093,5 @@ export async function cleanup() {
     testStarted = false;
     launchedByTask = false;
     useProjectTestSetup = false;
+    debug("cleanup: completed");
 }
