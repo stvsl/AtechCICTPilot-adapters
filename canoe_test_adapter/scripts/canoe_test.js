@@ -12,6 +12,7 @@ const CANOE_CONFIGURATION_READY_TIMEOUT_MS = 120000;
 const CANOE_TEST_SETUP_READY_TIMEOUT_MS = 120000;
 const CANOE_MEASUREMENT_START_TIMEOUT_MS = 120000;
 const CANOE_POLL_INTERVAL_MS = 250;
+const CANOE_ACTIVE_OBJECT_GRACE_TIMEOUT_MS = 3000;
 
 let application = null;
 let measurement = null;
@@ -884,6 +885,38 @@ async function waitForAutomationServer() {
     "CANoe Automation server to become available");
 }
 
+async function connectToStartedAutomationServer() {
+    const started = Date.now();
+    debug("connect: checking whether the started CANoe instance is active");
+    while (Date.now() - started < CANOE_ACTIVE_OBJECT_GRACE_TIMEOUT_MS) {
+        task.checkCancelled();
+        let candidate = null;
+        let candidateMeasurement = null;
+        try {
+            candidate = com.getActive("CANoe.Application");
+            candidateMeasurement = candidate.get("Measurement");
+            candidateMeasurement.get("Running");
+            release(measurement);
+            measurement = candidateMeasurement;
+            candidateMeasurement = null;
+            release(application);
+            application = candidate;
+            candidate = null;
+            return;
+        } catch (_) {
+            release(candidateMeasurement);
+            release(candidate);
+            await task.delay(CANOE_POLL_INTERVAL_MS);
+        }
+    }
+
+    // Some CANoe versions started with -embedding do not publish an Active
+    // Object in the ROT. COM activation connects to their local server once
+    // it has registered its class object.
+    debug("connect: calling com.create(CANoe.Application)");
+    application = com.create("CANoe.Application");
+}
+
 async function openConfiguration() {
     if (application === null) {
         throw new Error("CANoe Automation is not connected");
@@ -1014,10 +1047,12 @@ export async function connect() {
         debug("connect: skipped in mock Automation mode");
         return;
     }
-    debug(attachExisting
-        ? "connect: waiting for the existing CANoe Automation server"
-        : "connect: waiting for the started CANoe Automation server");
-    await waitForAutomationServer();
+    if (attachExisting) {
+        debug("connect: waiting for the existing CANoe Automation server");
+        await waitForAutomationServer();
+    } else {
+        await connectToStartedAutomationServer();
+    }
     debug("connect: completed");
 }
 
