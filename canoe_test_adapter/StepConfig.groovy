@@ -12,7 +12,7 @@ stages {
         }
     }
     stage("连接 Automation") {
-        timeout(60000)
+        timeout(150000)
         steps {
             runjs("scripts/canoe_test.js", "connect")
         }
@@ -44,6 +44,5 @@ stages {
 }
 post {
     always {
-        runjs("scripts/canoe_test.js", "cleanup")
     }
 }

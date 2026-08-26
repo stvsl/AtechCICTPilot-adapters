@@ -76,6 +76,13 @@
             "nameEN": "Task Workspace Root",
             "type": "string_url_dir",
             "required": false
+        },
+        {
+            "id": "NEW_CANOE_WHEN_START",
+            "nameCN": "启动时新建 CANoe",
+            "nameEN": "Start New CANoe",
+            "type": "boolean",
+            "required": false
         }
     ]
 }

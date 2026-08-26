@@ -13,8 +13,11 @@ const DEFAULT_FLASH_MODULE = "FlashDownLoad";
 const DEFAULT_INPUT_DIRECTORY = "Input";
 const DEFAULT_CONFIGURATION_TIMEOUT_MS = 120000;
 const DEFAULT_FLASH_TIMEOUT_MS = 1800000;
-const CANOE_OPEN_TIMEOUT_MS = 60000;
-const CANOE_OPEN_RETRY_DELAY_MS = 1000;
+const CANOE_AUTOMATION_READY_TIMEOUT_MS = 120000;
+const CANOE_MEASUREMENT_STOP_TIMEOUT_MS = 120000;
+const CANOE_CONFIGURATION_READY_TIMEOUT_MS = 120000;
+const CANOE_TEST_SETUP_READY_TIMEOUT_MS = 120000;
+const CANOE_POLL_INTERVAL_MS = 250;
 
 let application = null;
 let measurement = null;
@@ -31,6 +34,7 @@ let reportUri = "";
 let inputDirectoryUri = "";
 let flashParameters = {};
 let launchedByTask = false;
+let attachExisting = false;
 let mockMode = false;
 let measurementRunning = false;
 let flashStarted = false;
@@ -64,6 +68,59 @@ function optionalRequirement(key) {
     } catch (_) {
         return "";
     }
+}
+
+function canoeStartMode() {
+    let value;
+    try {
+        value = task.device("NEW_CANOE_WHEN_START");
+    } catch (_) {
+        const attachExisting = Boolean(task.option("AttachExisting", false));
+        return {attachExisting, clearExisting: !attachExisting};
+    }
+    if (value === undefined || value === null || String(value).trim() === "") {
+        const attachExisting = Boolean(task.option("AttachExisting", false));
+        return {attachExisting, clearExisting: !attachExisting};
+    }
+    if (typeof value === "boolean") {
+        return { attachExisting: !value, clearExisting: value };
+    }
+    const normalized = String(value).trim().toLowerCase();
+    if (normalized === "true") {
+        return { attachExisting: false, clearExisting: true };
+    }
+    if (normalized === "false") {
+        return { attachExisting: true, clearExisting: false };
+    }
+    throw new Error("NEW_CANOE_WHEN_START must be true or false");
+}
+
+async function clearExistingCanoe() {
+    let existingApplication = null;
+    try {
+        existingApplication = com.getActive("CANoe.Application");
+    } catch (_) {
+        return;
+    }
+    try {
+        existingApplication.call("Quit");
+        task.info("Closed existing CANoe instance before starting a new one");
+    } catch (error) {
+        throw new Error(`Unable to close existing CANoe instance: ${error.message}`);
+    } finally {
+        release(existingApplication);
+    }
+    await waitUntil(() => {
+        let activeApplication = null;
+        try {
+            activeApplication = com.getActive("CANoe.Application");
+            return false;
+        } catch (_) {
+            return true;
+        } finally {
+            release(activeApplication);
+        }
+    }, CANOE_OPEN_TIMEOUT_MS, "the existing CANoe Automation server to stop");
 }
 
 function readJson(uri, field) {
@@ -297,14 +354,26 @@ function extractReportedVersion(uri) {
 
 async function waitUntil(predicate, timeoutMs, description, ignoreCancellation = false) {
     const started = Date.now();
-    while (!predicate()) {
+    let lastError = "";
+    while (true) {
         if (!ignoreCancellation) {
             task.checkCancelled();
         }
-        if (Date.now() - started >= timeoutMs) {
-            throw new Error(`Timed out waiting for ${description}`);
+        try {
+            if (predicate()) {
+                return;
+            }
+        } catch (error) {
+            if (error && error.canoeFatal === true) {
+                throw error;
+            }
+            lastError = errorMessage(error);
         }
-        await task.delay(250, ignoreCancellation);
+        if (Date.now() - started >= timeoutMs) {
+            const detail = lastError ? `; last COM error: ${lastError}` : "";
+            throw new Error(`Timed out waiting for ${description} after ${timeoutMs} ms${detail}`);
+        }
+        await task.delay(CANOE_POLL_INTERVAL_MS, ignoreCancellation);
     }
 }
 
@@ -327,27 +396,101 @@ function isTransientOpenFailure(error) {
     return /COM invocation failed/i.test(errorMessage(error));
 }
 
-function checkOpenResult() {
-    const openResult = optionalProperty(configuration, "OpenConfigurationResult")
-        || optionalProperty(application, "OpenConfigurationResult");
+function checkOpenResult(resultOverride) {
+    const openResult = resultOverride === undefined || resultOverride === null
+        ? optionalProperty(configuration, "OpenConfigurationResult")
+            || optionalProperty(application, "OpenConfigurationResult")
+        : resultOverride;
     if (openResult === undefined || openResult === null) {
-        return;
+        // OpenConfigurationResult is not exposed by every CANoe release. The
+        // Configuration object itself is the portable readiness signal.
+        return true;
     }
 
-    const resultCode = optionalProperty(openResult, "result");
+    const resultCode = typeof openResult === "number"
+        ? openResult : optionalProperty(openResult, "result")
+            || optionalProperty(openResult, "Result");
     const openError = optionalProperty(openResult, "ErrorMessage");
     release(openResult);
-    if (resultCode === undefined || Number(resultCode) === 0) {
-        return;
+    if (resultCode === undefined || resultCode === null
+            || Number(resultCode) === 0) {
+        return true;
     }
     if (Number(resultCode) === 2) {
         task.warning(`CANoe opened the configuration with a warning${
             openError ? `: ${openError}` : ""}`);
-        return;
+        return true;
     }
     const detail = openError ? `: ${openError}`
         : ` with result ${resultCode}`;
-    throw new Error(`CANoe configuration open failed${detail}`);
+    const error = new Error(`CANoe configuration open failed${detail}`);
+    error.canoeFatal = true;
+    throw error;
+}
+
+function hasFlashTestSetup() {
+    const setup = optionalProperty(configuration, "TestSetup");
+    const environments = setup === undefined || setup === null
+        ? null : optionalProperty(setup, "TestEnvironments");
+    return environments !== null && environments !== undefined
+        && collectionCount(environments) > 0;
+}
+
+async function waitForFlashTestSetup() {
+    await waitUntil(hasFlashTestSetup, CANOE_TEST_SETUP_READY_TIMEOUT_MS,
+                    "CANoe TestEnvironment to finish loading");
+}
+
+async function waitForConfigurationReady() {
+    await waitUntil(() => {
+        if (configuration === null) {
+            const opened = application.get("Configuration");
+            if (opened === null || opened === undefined) {
+                return false;
+            }
+            configuration = opened;
+        }
+        return checkOpenResult();
+    }, CANOE_CONFIGURATION_READY_TIMEOUT_MS,
+    "CANoe configuration to finish loading");
+}
+
+async function stopMeasurementBeforeOpening() {
+    if (measurement === null) {
+        measurement = application.get("Measurement");
+    }
+    if (measurement.get("Running") !== true) {
+        return;
+    }
+    measurement.call("Stop");
+    await waitUntil(() => measurement.get("Running") !== true,
+                    CANOE_MEASUREMENT_STOP_TIMEOUT_MS,
+                    "CANoe Measurement to stop before opening the configuration");
+}
+
+async function waitForAutomationServer() {
+    let candidate = null;
+    await waitUntil(() => {
+        try {
+            // CANoe started with -embedding can take time to publish its
+            // Automation object. Activating the ProgID here would launch a
+            // second CANoe process if the first one is not ready yet.
+            candidate = com.getActive("CANoe.Application");
+            const candidateMeasurement = candidate.get("Measurement");
+            candidateMeasurement.get("Running");
+            release(measurement);
+            measurement = candidateMeasurement;
+            release(application);
+            application = candidate;
+            candidate = null;
+            return true;
+        } catch (_) {
+            release(candidate);
+            candidate = null;
+            return false;
+        }
+    }, CANOE_AUTOMATION_READY_TIMEOUT_MS,
+    "CANoe Automation server to become available");
 }
 
 async function openConfiguration() {
@@ -355,56 +498,24 @@ async function openConfiguration() {
         throw new Error("CANoe Automation is not connected");
     }
     if (configuration !== null) {
+        await waitForConfigurationReady();
+        await waitForFlashTestSetup();
         return;
     }
     // The task workspace is disposable, so CANoe may persist an upgraded
     // configuration there. Keep prompts disabled for unattended execution.
-    const started = Date.now();
-    let attempts = 0;
-    let lastError = null;
-    while (true) {
-        task.checkCancelled();
-        try {
-            application.call("Open", fs.nativePath(configurationUri), true, false);
-            configuration = application.get("Configuration");
-            checkOpenResult();
-            return;
-        } catch (error) {
-            release(configuration);
-            configuration = null;
-            if (!isTransientOpenFailure(error)) {
-                throw error;
-            }
-            lastError = error;
-
-            // CANoe may have accepted Open and only reported a transient COM
-            // error while its Automation server was still initializing. In
-            // that case a second Open call can crash CANoe; adopt the
-            // configuration that is already being loaded instead.
-            let opened = null;
-            try {
-                opened = application.get("Configuration");
-            } catch (_) {
-                // The Configuration property is unavailable until CANoe has
-                // created the object; continue waiting in that case.
-            }
-            if (opened !== null && opened !== undefined) {
-                configuration = opened;
-                checkOpenResult();
-                return;
-            }
+    await stopMeasurementBeforeOpening();
+    try {
+        application.call("Open", fs.nativePath(configurationUri), true, false);
+    } catch (error) {
+        if (isTransientOpenFailure(error)) {
+            throw new Error("CANoe Application became unavailable after "
+                + `initialization: ${errorMessage(error)}`);
         }
-
-        if (Date.now() - started >= CANOE_OPEN_TIMEOUT_MS) {
-            throw new Error(
-                `Timed out opening CANoe configuration after ${attempts + 1} attempts: ${
-                    errorMessage(lastError)}`);
-        }
-        attempts += 1;
-        task.warning(`CANoe is still initializing; retrying configuration open `
-            + `(attempt ${attempts}): ${errorMessage(lastError)}`);
-        await task.delay(CANOE_OPEN_RETRY_DELAY_MS);
+        throw error;
     }
+    await waitForConfigurationReady();
+    await waitForFlashTestSetup();
 }
 
 export async function prepare(projectPackage, softwarePackage) {
@@ -417,6 +528,7 @@ export async function prepare(projectPackage, softwarePackage) {
     inputDirectoryUri = "";
     flashStarted = false;
     mockMode = Boolean(task.option("MockAutomation", false));
+    attachExisting = false;
 
     fs.extractZip(projectPackage, projectRootUri);
     const descriptorUri = `${projectRootUri}/canoe-project.json`;
@@ -484,10 +596,15 @@ export async function launch() {
         task.progress(8);
         return;
     }
-    if (Boolean(task.option("AttachExisting", false))) {
+    const startMode = canoeStartMode();
+    attachExisting = startMode.attachExisting;
+    if (attachExisting) {
         launchedByTask = false;
         task.info("Attaching to an existing CANoe process");
         return;
+    }
+    if (startMode.clearExisting) {
+        await clearExistingCanoe();
     }
     const executable = task.device("CANOE_SOFTWARE_POSITION");
     canoeProcess = cli.start({
@@ -497,17 +614,13 @@ export async function launch() {
     });
     launchedByTask = true;
     task.info(`CANoe started with PID ${canoeProcess.pid}`);
-    await task.delay(1500);
 }
 
 export async function connect() {
     if (mockMode) {
         return;
     }
-    const attachExisting = Boolean(task.option("AttachExisting", false));
-    application = attachExisting
-        ? com.getActive("CANoe.Application")
-        : com.create("CANoe.Application");
+    await waitForAutomationServer();
     task.info(attachExisting
         ? "Attached to an existing CANoe instance"
         : "Connected to CANoe Automation");
@@ -689,5 +802,6 @@ export async function cleanup() {
     canoeProcess = null;
     measurementRunning = false;
     launchedByTask = false;
+    attachExisting = false;
     flashStarted = false;
 }
