@@ -41,6 +41,7 @@ let measurementRunning = false;
 let testStarted = false;
 let expectedResultCount = 0;
 let useProjectTestSetup = false;
+let selectedTestCases = [];
 
 function debug(message) {
     task.info(`[CANoe debug] ${message}`);
@@ -312,12 +313,12 @@ function reportPathUri() {
 }
 
 function reportPathUris() {
+    const paths = [];
     if (reportUri && fs.exists(reportUri)) {
-        return [reportUri];
+        paths.push(reportUri);
     }
     const reports = testConfigurationReport === null
         ? reportObjects : [testConfigurationReport].concat(reportObjects);
-    const paths = [];
     for (const report of reports) {
         if (report === null || report === undefined) {
             continue;
@@ -445,16 +446,35 @@ function addExternalScripts(uri) {
     registerScript({ uri: target, kind, name: baseName(uri) });
 }
 
-function objectRunning(object, started = true) {
+function executionState(object, started = true) {
     if (!started || object === null || object === undefined) {
-        return false;
+        return { known: false, running: false };
     }
-    const running = optionalProperty(object, "Running");
-    if (running !== undefined) {
-        return running === true;
+    let known = false;
+    for (const name of ["Running", "Executing", "IsRunning"]) {
+        const value = optionalProperty(object, name);
+        if (value !== undefined && value !== null) {
+            known = true;
+            if (value === true) {
+                return { known: true, running: true };
+            }
+        }
     }
     const state = normalize(optionalProperty(object, "State"));
-    return state !== "" && !stateIsTerminal(state);
+    if (state !== "") {
+        known = true;
+        return {
+            known,
+            running: state === "1" || state === "running"
+                || state === "executing" || state === "started"
+                || state === "active" || state === "cstarting"
+        };
+    }
+    return { known, running: false };
+}
+
+function objectRunning(object, started = true) {
+    return executionState(object, started).running;
 }
 
 function moduleRunning() {
@@ -479,7 +499,7 @@ function testCaseId(testCase) {
         || optionalProperty(testCase, "Caption") || "");
 }
 
-function walkElements(elements, unitName, selectedOnly) {
+function walkElements(elements, unitName) {
     const local = [];
     for (const element of collectionItems(elements)) {
         const type = normalize(optionalProperty(element, "Type"));
@@ -491,18 +511,10 @@ function walkElements(elements, unitName, selectedOnly) {
         const isCase = type.includes("testcase") || type.includes("test_case")
             || (!hasChildren && verdictValue !== undefined && id !== "");
         if (isCase) {
-            const selected = requestedIds.length === 0 || requestedIds.includes(id);
-            try {
-                element.set("Enabled", selected);
-            } catch (_) {
-                // Some CANoe versions expose Enabled as read-only after start.
-            }
-            if (selected && (!selectedOnly || selected)) {
-                local.push({ testUnit: unitName, id, name: id, object: element });
-            }
+            local.push({ testUnit: unitName, id, name: id, object: element });
         }
         if (children !== undefined && children !== null) {
-            const nested = walkElements(children, unitName, selectedOnly);
+            const nested = walkElements(children, unitName);
             for (const child of nested) {
                 local.push(child);
             }
@@ -519,7 +531,11 @@ function collectVerdictsFrom(units) {
         if (elements === undefined || elements === null) {
             continue;
         }
-        for (const candidate of walkElements(elements, unitName, true)) {
+        for (const candidate of walkElements(elements, unitName)) {
+            if (!selectedTestCases.some((selected) => selected.testUnit === candidate.testUnit
+                    && selected.id === candidate.id)) {
+                continue;
+            }
             const verdict = optionalProperty(candidate.object, "Verdict");
             if (!verdictIsAvailable(verdict)) {
                 continue;
@@ -540,6 +556,88 @@ function collectVerdicts() {
     return testMode === "communication"
         ? collectVerdictsFrom(activeCommunicationModules)
         : collectVerdictsFrom(testUnits);
+}
+
+function sameTestCase(left, right) {
+    return left.testUnit === right.testUnit && left.id === right.id;
+}
+
+function publishCompletedResults(candidates) {
+    for (const candidate of candidates) {
+        if (results.some((result) => sameTestCase(result, candidate))) {
+            continue;
+        }
+        results.push(candidate);
+        publishTestCaseResult(candidate, results.length, expectedResultCount);
+    }
+}
+
+function selectedCaseCount(units) {
+    return configuredTestCases(units).length;
+}
+
+function completedCaseCount(units) {
+    const configured = configuredTestCases(units);
+    return results.filter((result) => configured.some((candidate) =>
+        sameTestCase(result, candidate))).length;
+}
+
+function configuredTestCases(units) {
+    const output = [];
+    for (const unit of collectionItems(units)) {
+        const unitName = String(optionalProperty(unit, "Name") || "");
+        const elements = elementsFor(unit);
+        if (elements === null || elements === undefined) {
+            continue;
+        }
+        for (const candidate of walkElements(elements, unitName)) {
+            if (requestedIds.length === 0 || requestedIds.includes(candidate.id)) {
+                output.push({
+                    testUnit: candidate.testUnit,
+                    id: candidate.id,
+                    name: candidate.name
+                });
+            }
+        }
+    }
+    return output;
+}
+
+function publishTestCaseResult(result, sequence, total) {
+    const number = String(sequence).padStart(4, "0");
+    const relative = `results/test-case-${number}.json`;
+    const source = `${projectRootUri}/${relative}`;
+    const destination = `artifact://canoe-test/${relative}`;
+    fs.mkdir(`${projectRootUri}/results`);
+    fs.writeText(source, JSON.stringify({
+        taskId: task.id(),
+        sequence,
+        total,
+        result
+    }, null, 2));
+    fs.copy(source, destination, true);
+    task.publish(`TEST_RESULT:${number}`,
+                 destination,
+                 `Test case ${sequence}: ${result.id}`,
+                 "application/json");
+    task.info(`[CANoe result] ${sequence}/${total}: ${result.id} - ${result.verdict}`);
+}
+
+function writeResultsReport() {
+    const source = `${projectRootUri}/test-results.json`;
+    const passed = results.length > 0 && results.every((item) => item.passed);
+    fs.writeText(source, JSON.stringify({
+        taskId: task.id(),
+        status: passed ? "passed" : "failed",
+        results
+    }, null, 2));
+    reportUri = source;
+    const destination = "artifact://canoe-test/test-results.json";
+    fs.copy(source, destination, true);
+    task.publish("REPORT_URI",
+                 destination,
+                 "CANoe test results",
+                 "application/json");
 }
 
 function elementsFor(object) {
@@ -620,24 +718,32 @@ function configureVtest() {
         if (elements === null || elements === undefined) {
             continue;
         }
-        const candidates = walkElements(elements,
-                                        String(optionalProperty(unit, "Name") || ""),
-                                        false);
-        if (candidates.length > 0) {
+        const candidates = walkElements(
+            elements, String(optionalProperty(unit, "Name") || ""));
+        const selectedCandidates = candidates.filter((candidate) =>
+            requestedIds.length === 0 || requestedIds.includes(candidate.id));
+        for (const candidate of candidates) {
+            try {
+                candidate.object.set("Enabled", selectedCandidates.includes(candidate));
+            } catch (_) {
+            }
+        }
+        if (selectedCandidates.length > 0) {
             try {
                 unit.set("Enabled", true);
             } catch (_) {
                 // Some CANoe versions enable a TestUnit implicitly.
             }
         }
-        for (const candidate of candidates) {
+        for (const candidate of selectedCandidates) {
             selected.push(candidate.id);
         }
     }
     if (selected.length === 0) {
         throw new Error("No enabled CANoe test case matches TEST_CASE_IDS");
     }
-    expectedResultCount = selected.length;
+    selectedTestCases = configuredTestCases(testUnits);
+    expectedResultCount = selectedTestCases.length;
     testConfigurationReport = optionalProperty(testConfiguration, "Report");
     if (testConfigurationReport !== undefined && testConfigurationReport !== null) {
         reportObjects.push(testConfigurationReport);
@@ -684,17 +790,23 @@ function configureCommunication() {
             continue;
         }
         const elements = elementsFor(module);
-        const candidates = walkElements(elements,
-                                        moduleName,
-                                        false);
-        if (candidates.length > 0) {
+        const candidates = walkElements(elements, moduleName);
+        const selectedCandidates = candidates.filter((candidate) =>
+            requestedIds.length === 0 || requestedIds.includes(candidate.id));
+        for (const candidate of candidates) {
+            try {
+                candidate.object.set("Enabled", selectedCandidates.includes(candidate));
+            } catch (_) {
+            }
+        }
+        if (selectedCandidates.length > 0) {
             activeCommunicationModules.push(module);
             try {
                 module.set("Enabled", true);
             } catch (_) {
                 // A module can be enabled by its parent environment.
             }
-            for (const candidate of candidates) {
+            for (const candidate of selectedCandidates) {
                 selected.push(candidate.id);
             }
         }
@@ -706,7 +818,11 @@ function configureCommunication() {
     if (selected.length === 0) {
         throw new Error("No enabled CANoe communication test case matches TEST_CASE_IDS");
     }
-    expectedResultCount = selected.length;
+    selectedTestCases = [];
+    for (const module of activeCommunicationModules) {
+        selectedTestCases.push(...configuredTestCases([module]));
+    }
+    expectedResultCount = selectedTestCases.length;
 }
 
 function configureProjectTests() {
@@ -963,6 +1079,7 @@ export async function prepare(projectPackage) {
     results = [];
     testStarted = false;
     expectedResultCount = 0;
+    selectedTestCases = [];
     useProjectTestSetup = false;
     mockMode = Boolean(task.option("MockAutomation", false));
     attachExisting = false;
@@ -1108,42 +1225,46 @@ export async function execute() {
         || DEFAULT_TEST_TIMEOUT_MS;
     if (mockMode) {
         const ids = requestedIds.length > 0 ? requestedIds : ["mock.testcase"];
-        results = ids.map((id) => ({
-            testUnit: "mock",
-            id,
-            name: id,
-            verdict: "cVerdictPassed",
-            passed: true
-        }));
-        fs.writeText(`${projectRootUri}/mock-report.json`, JSON.stringify({
-            status: "passed",
-            results
-        }, null, 2));
-        reportUri = `${projectRootUri}/mock-report.json`;
+        expectedResultCount = ids.length;
+        for (const id of ids) {
+            publishCompletedResults([{
+                testUnit: "mock",
+                id,
+                name: id,
+                verdict: "cVerdictPassed",
+                passed: true
+            }]);
+        }
+        writeResultsReport();
         debug(`execute: mock execution completed (results=${results.length})`);
         task.progress(95);
         return;
     }
     const started = Date.now();
+    if (selectedTestCases.length === 0) {
+        throw new Error("No CANoe test cases have been configured");
+    }
     if (testMode === "communication") {
         if (activeCommunicationModules.length === 0) {
             throw new Error("No CANoe communication test modules have been configured");
         }
         for (const module of activeCommunicationModules) {
+            const expectedModuleResultCount = selectedCaseCount([module]);
             debug("execute: starting communication test module");
             module.set("ExecuteRepeatedly", false);
             module.call("Start");
             testStarted = true;
-        }
-        while (activeCommunicationModules.some((module) => objectRunning(module, true))
-                || results.length < expectedResultCount) {
-            task.checkCancelled();
-            results = collectVerdicts();
-            task.progress(Math.min(90, 20 + results.length * 5));
-            if (Date.now() - started >= timeout) {
-                throw new Error("Timed out waiting for CANoe communication test modules");
+            while (objectRunning(module, true)
+                    || completedCaseCount([module]) < expectedModuleResultCount) {
+                task.checkCancelled();
+                publishCompletedResults(collectVerdictsFrom([module]));
+                task.progress(Math.min(90, 20 + results.length * 5));
+                if (Date.now() - started >= timeout) {
+                    throw new Error("Timed out waiting for CANoe communication test module");
+                }
+                await task.delay(CANOE_POLL_INTERVAL_MS);
             }
-            await task.delay(250);
+            publishCompletedResults(collectVerdictsFrom([module]));
         }
     } else {
         if (testConfiguration === null) {
@@ -1154,8 +1275,9 @@ export async function execute() {
         testStarted = true;
         while (moduleRunning() || results.length < expectedResultCount) {
             task.checkCancelled();
-            results = collectVerdicts();
-            const progress = results.length === 0 ? 20 : Math.min(90, 20 + results.length * 5);
+            publishCompletedResults(collectVerdicts());
+            const progress = results.length === 0
+                ? 20 : Math.min(90, 20 + results.length * 5);
             task.progress(progress);
             if (!moduleRunning() && results.length >= expectedResultCount) {
                 break;
@@ -1163,11 +1285,11 @@ export async function execute() {
             if (Date.now() - started >= timeout) {
                 throw new Error("Timed out waiting for CANoe TestConfiguration");
             }
-            await task.delay(250);
+            await task.delay(CANOE_POLL_INTERVAL_MS);
         }
     }
-    results = collectVerdicts();
-    reportUri = reportPathUri();
+    publishCompletedResults(collectVerdicts());
+    writeResultsReport();
     debug(`execute: completed (results=${results.length})`);
     const passed = results.length > 0 && results.every((item) => item.passed);
     if (!passed) {
