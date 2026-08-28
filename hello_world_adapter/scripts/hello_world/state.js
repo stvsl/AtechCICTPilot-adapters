@@ -7,6 +7,11 @@ let waitDurationSeconds = null;
 let startedAt = 0;
 let completedAt = 0;
 let helloWorldCompleted = false;
+let testCaseSummary = {
+    total: 0,
+    passed: 0,
+    failed: 0
+};
 
 // 在准备工作区时清空所有阶段间数据，建立一次新的执行上下文。
 export function resetExecutionState() {
@@ -14,6 +19,11 @@ export function resetExecutionState() {
     startedAt = 0;
     completedAt = 0;
     helloWorldCompleted = false;
+    testCaseSummary = {
+        total: 0,
+        passed: 0,
+        failed: 0
+    };
 }
 
 // 参数校验阶段确认输入后保存时长，执行阶段再从这里读取。
@@ -27,7 +37,12 @@ export function executionState() {
         waitDurationSeconds,
         startedAt,
         completedAt,
-        helloWorldCompleted
+        helloWorldCompleted,
+        testCaseSummary: {
+            total: testCaseSummary.total,
+            passed: testCaseSummary.passed,
+            failed: testCaseSummary.failed
+        }
     };
 }
 
@@ -39,7 +54,12 @@ export function startWorkload() {
 }
 
 // 仅在等待任务完整结束后标记成功，供验证阶段确认前置阶段确实完成。
-export function completeWorkload() {
+export function completeWorkload(summary) {
     completedAt = Date.now();
     helloWorldCompleted = true;
+    testCaseSummary = {
+        total: summary.total,
+        passed: summary.passed,
+        failed: summary.failed
+    };
 }
