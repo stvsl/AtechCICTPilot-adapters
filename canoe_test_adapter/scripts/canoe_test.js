@@ -341,8 +341,18 @@ function parseIds(uri) {
     if (!text) {
         return [];
     }
-    if (uri.toLowerCase().endsWith(".json")) {
-        const value = readJson(uri, "TEST_CASE_IDS");
+    const isJson = uri.toLowerCase().endsWith(".json")
+        || text.startsWith("[") || text.startsWith("{");
+    if (isJson) {
+        let value;
+        try {
+            value = JSON.parse(text);
+        } catch (error) {
+            throw new Error(`TEST_CASE_IDS is not valid JSON: ${error.message}`);
+        }
+        if (value === null || typeof value !== "object") {
+            throw new Error("TEST_CASE_IDS must contain a JSON object or array");
+        }
         if (Array.isArray(value)) {
             return value.map((item) => String(item).trim()).filter((item) => item.length > 0);
         }
@@ -728,12 +738,10 @@ function configureVtest() {
             } catch (_) {
             }
         }
-        if (selectedCandidates.length > 0) {
-            try {
-                unit.set("Enabled", true);
-            } catch (_) {
-                // Some CANoe versions enable a TestUnit implicitly.
-            }
+        try {
+            unit.set("Enabled", selectedCandidates.length > 0);
+        } catch (_) {
+            // 部分 CANoe 版本会隐式启用测试单元。
         }
         for (const candidate of selectedCandidates) {
             selected.push(candidate.id);
@@ -799,13 +807,13 @@ function configureCommunication() {
             } catch (_) {
             }
         }
+        try {
+            module.set("Enabled", selectedCandidates.length > 0);
+        } catch (_) {
+            // 部分 CANoe 版本由父级测试环境控制模块启用状态。
+        }
         if (selectedCandidates.length > 0) {
             activeCommunicationModules.push(module);
-            try {
-                module.set("Enabled", true);
-            } catch (_) {
-                // A module can be enabled by its parent environment.
-            }
             for (const candidate of selectedCandidates) {
                 selected.push(candidate.id);
             }

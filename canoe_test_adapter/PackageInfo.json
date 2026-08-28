@@ -55,9 +55,9 @@
         },
         {
             "id": "TEST_CASE_IDS",
-            "nameCN": "测试用例 ID（JSON 或文本，可选）",
-            "nameEN": "Test Case IDs (JSON or text, optional)",
-            "type": "file",
+            "nameCN": "测试用例 ID（文本或 JSON 文件，可选）",
+            "nameEN": "Test Case IDs (text or JSON file, optional)",
+            "type": "text_file",
             "fileExtension": ".json|.txt",
             "required": false
         }
