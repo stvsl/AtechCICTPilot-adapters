@@ -36,7 +36,6 @@ let inputDirectoryUri = "";
 let flashParameters = {};
 let launchedByTask = false;
 let attachExisting = false;
-let mockMode = false;
 let measurementRunning = false;
 let flashStarted = false;
 
@@ -559,7 +558,6 @@ export async function prepare(projectPackage, softwarePackage) {
     flashParameters = {};
     inputDirectoryUri = "";
     flashStarted = false;
-    mockMode = Boolean(task.option("MockAutomation", false));
     attachExisting = false;
 
     fs.extractZip(projectPackage, projectRootUri);
@@ -623,11 +621,6 @@ export async function prepare(projectPackage, softwarePackage) {
 }
 
 export async function launch() {
-    if (mockMode) {
-        task.info("Using the CANoe Automation simulator");
-        task.progress(8);
-        return;
-    }
     const startMode = canoeStartMode();
     attachExisting = startMode.attachExisting;
     if (attachExisting) {
@@ -649,9 +642,6 @@ export async function launch() {
 }
 
 export async function connect() {
-    if (mockMode) {
-        return;
-    }
     if (attachExisting) {
         await waitForAutomationServer();
     } else {
@@ -663,11 +653,6 @@ export async function connect() {
 }
 
 export async function startMeasurement() {
-    if (mockMode) {
-        measurementRunning = true;
-        task.progress(10);
-        return;
-    }
     await openConfiguration();
     measurement = application.get("Measurement");
     if (measurement.get("Running") !== true) {
@@ -681,10 +666,6 @@ export async function startMeasurement() {
 }
 
 export async function validateContract() {
-    if (mockMode) {
-        task.progress(15);
-        return;
-    }
     await openConfiguration();
     userFiles = configuration.get("UserFiles");
     const setup = configuration.get("TestSetup");
@@ -711,15 +692,6 @@ export async function flash() {
     const requestStarted = Date.now();
     const timeout = Number(projectDescriptor && projectDescriptor.FlashTimeoutMs)
         || DEFAULT_FLASH_TIMEOUT_MS;
-    if (mockMode) {
-        for (let progress = 20; progress <= 90; progress += 10) {
-            await task.delay(50);
-            task.progress(progress);
-        }
-        const version = expectedVersion();
-        task.progress(96);
-        return;
-    }
     if (flashModule === null) {
         throw new Error("FlashDownLoad module has not been loaded");
     }
@@ -783,10 +755,6 @@ export async function collectArtifacts() {
 }
 
 export async function cleanup() {
-    if (mockMode) {
-        measurementRunning = false;
-        return;
-    }
     try {
         if (flashModule !== null && !moduleFinished()) {
             flashModule.call("Stop");

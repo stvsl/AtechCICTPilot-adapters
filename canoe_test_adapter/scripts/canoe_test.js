@@ -36,7 +36,6 @@ let communicationModuleNames = [];
 let reportObjects = [];
 let launchedByTask = false;
 let attachExisting = false;
-let mockMode = false;
 let measurementRunning = false;
 let testStarted = false;
 let expectedResultCount = 0;
@@ -1089,7 +1088,6 @@ export async function prepare(projectPackage) {
     expectedResultCount = 0;
     selectedTestCases = [];
     useProjectTestSetup = false;
-    mockMode = Boolean(task.option("MockAutomation", false));
     attachExisting = false;
 
     debug("prepare: extracting project package");
@@ -1138,11 +1136,6 @@ export async function prepare(projectPackage) {
 
 export async function launch() {
     debug("launch: starting");
-    if (mockMode) {
-        debug("launch: mock Automation mode selected");
-        task.progress(8);
-        return;
-    }
     const startMode = canoeStartMode();
     attachExisting = startMode.attachExisting;
     if (attachExisting) {
@@ -1168,10 +1161,6 @@ export async function launch() {
 
 export async function connect() {
     debug("connect: starting");
-    if (mockMode) {
-        debug("connect: skipped in mock Automation mode");
-        return;
-    }
     if (attachExisting) {
         debug("connect: waiting for the existing CANoe Automation server");
         await waitForAutomationServer();
@@ -1183,12 +1172,6 @@ export async function connect() {
 
 export async function startMeasurement() {
     debug("startMeasurement: starting");
-    if (mockMode) {
-        measurementRunning = true;
-        debug("startMeasurement: mock measurement marked running");
-        task.progress(10);
-        return;
-    }
     await openConfiguration();
     if (measurement === null) {
         measurement = application.get("Measurement");
@@ -1210,11 +1193,6 @@ export async function startMeasurement() {
 
 export async function configure() {
     debug(`configure: starting (mode=${testMode})`);
-    if (mockMode) {
-        debug("configure: skipped in mock Automation mode");
-        task.progress(15);
-        return;
-    }
     await openConfiguration();
     if (testMode === "project") {
         configureProjectTests();
@@ -1231,23 +1209,6 @@ export async function execute() {
     debug(`execute: starting (mode=${testMode}, expectedResults=${expectedResultCount})`);
     const timeout = Number(projectDescriptor && projectDescriptor.TestTimeoutMs)
         || DEFAULT_TEST_TIMEOUT_MS;
-    if (mockMode) {
-        const ids = requestedIds.length > 0 ? requestedIds : ["mock.testcase"];
-        expectedResultCount = ids.length;
-        for (const id of ids) {
-            publishCompletedResults([{
-                testUnit: "mock",
-                id,
-                name: id,
-                verdict: "cVerdictPassed",
-                passed: true
-            }]);
-        }
-        writeResultsReport();
-        debug(`execute: mock execution completed (results=${results.length})`);
-        task.progress(95);
-        return;
-    }
     const started = Date.now();
     if (selectedTestCases.length === 0) {
         throw new Error("No CANoe test cases have been configured");
@@ -1340,10 +1301,6 @@ export async function collectArtifacts() {
 
 export async function cleanup() {
     debug(`cleanup: starting (measurementRunning=${measurementRunning}, testStarted=${testStarted}, launchedByTask=${launchedByTask})`);
-    if (mockMode) {
-        debug("cleanup: skipped in mock Automation mode");
-        return;
-    }
     try {
         if (testConfiguration !== null && testStarted) {
             debug("cleanup: calling TestConfiguration.Stop");
