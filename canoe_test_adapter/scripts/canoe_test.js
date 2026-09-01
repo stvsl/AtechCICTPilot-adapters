@@ -272,15 +272,6 @@ function propertyOr(object, names, fallback = undefined) {
     return fallback;
 }
 
-function stateIsTerminal(state) {
-    const value = normalize(state);
-    return value === "0" || value === "stopped" || value === "finished"
-        || value === "completed" || value === "passed" || value === "failed"
-        || value === "cstopped" || value === "cfinished"
-        || value === "ccompleted" || value === "cpassed" || value === "cfailed"
-        || value === "cverdictpassed" || value === "cverdictfailed";
-}
-
 function release(object) {
     if (object === null) {
         return;
@@ -304,11 +295,6 @@ function nativePathToWorkspaceUri(nativePath) {
         return "";
     }
     return `${projectRootUri}/${candidate.substring(root.length).replace(/^\/+/, "")}`;
-}
-
-function reportPathUri() {
-    const paths = reportPathUris();
-    return paths.length > 0 ? paths[0] : "";
 }
 
 function reportPathUris() {
