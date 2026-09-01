@@ -402,45 +402,6 @@ function registerScript(script) {
     }
 }
 
-function isArchive(uri) {
-    return uri.toLowerCase().endsWith(".zip");
-}
-
-function addExternalScripts(uri) {
-    if (!uri) {
-        return;
-    }
-    const resourceRoot = "workspace://canoe-test/resources";
-    if (isArchive(uri)) {
-        fs.extractZip(uri, resourceRoot);
-        const entries = fs.list(resourceRoot, true);
-        for (const entry of entries) {
-            if (entry.type === "file" && (entry.name.toLowerCase().endsWith(".vtuexe")
-                    || entry.name.toLowerCase().endsWith(".tse")
-                    || entry.name.toLowerCase().endsWith(".xml"))) {
-                const kind = scriptKind(entry.name);
-                if (!testMode) {
-                    testMode = kind;
-                } else if (testMode !== kind) {
-                    throw new Error("VTESTStudio and communication scripts cannot be mixed in one task");
-                }
-                registerScript({ uri: entry.uri, kind, name: entry.name });
-            }
-        }
-        return;
-    }
-    const target = `${resourceRoot}/${baseName(uri)}`;
-    fs.mkdir(resourceRoot);
-    fs.copy(uri, target, true);
-    const kind = scriptKind(baseName(uri));
-    if (!testMode) {
-        testMode = kind;
-    } else if (testMode !== kind) {
-        throw new Error("VTESTStudio and communication scripts cannot be mixed in one task");
-    }
-    registerScript({ uri: target, kind, name: baseName(uri) });
-}
-
 function executionState(object, started = true) {
     if (!started || object === null || object === undefined) {
         return { known: false, running: false };
@@ -1105,7 +1066,6 @@ export async function prepare(projectPackage) {
         }
         registerScript({ uri, kind, name: entry.name || baseName(uri) });
     }
-    addExternalScripts(optionalRequirement("TEST_SCRIPTS"));
     if (scriptUris.length === 0) {
         if (!useProjectTestSetup) {
             throw new Error("No CANoe test script (.vtuexe/.tse/.xml) was supplied");

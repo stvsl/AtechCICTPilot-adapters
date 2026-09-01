@@ -46,14 +46,6 @@
             "required": true
         },
         {
-            "id": "TEST_SCRIPTS",
-            "nameCN": "VTESTStudio 测试脚本（可选）",
-            "nameEN": "VTESTStudio Test Scripts (optional)",
-            "type": "file",
-            "fileExtension": ".zip|.vtuexe|.tse|.xml",
-            "required": false
-        },
-        {
             "id": "TEST_CASE_IDS",
             "nameCN": "测试用例 ID（文本或 JSON 文件，可选）",
             "nameEN": "Test Case IDs (text or JSON file, optional)",

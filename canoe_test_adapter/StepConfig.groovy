@@ -35,8 +35,15 @@ stages {
             runjs("scripts/canoe_test.js", "execute")
         }
     }
+    stage("收集测试报告") {
+        timeout(60000)
+        steps {
+            runjs("scripts/canoe_test.js", "collectArtifacts")
+        }
+    }
 }
 post {
     always {
+        runjs("scripts/canoe_test.js", "cleanup")
     }
 }
