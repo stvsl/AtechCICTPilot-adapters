@@ -1,0 +1,73 @@
+{
+    "ManifestVersion": 2,
+    "PackageId": "canoe_test_adapter_v2",
+    "PackageNameCN": "CANoe 通信测试适配器 v2",
+    "PackageNameEN": "CANoe Communication Test Adapter v2",
+    "PackageVersion": "2.0.0",
+    "DescriptionCN": "执行 CANoe 工程内预置的通信测试环境",
+    "DescriptionEN": "Execute a preconfigured CANoe communication TestEnvironment",
+    "Author": "DOTRUST",
+    "NodeType": "Test",
+    "NodeAdapterNameCN": "CANoe 通信测试 v2",
+    "NodeAdapterNameEN": "CANoe Communication Test v2",
+    "Runtime": {
+        "ApiVersion": "1.0",
+        "Language": "javascript",
+        "Workflow": "workflow.json"
+    },
+    "Permissions": {
+        "COM": {
+            "ProgIds": [
+                "CANoe.Application"
+            ],
+            "AllowActiveObject": true
+        },
+        "CLI": {
+            "Executables": [
+                {
+                    "DeviceProperty": "CANOE_SOFTWARE_POSITION"
+                }
+            ],
+            "AllowTerminal": false
+        }
+    },
+    "CallingRuntime": [
+        "COM",
+        "CLI"
+    ],
+    "SelfExaminationAbility": true,
+    "RequirementProperty": [
+        {
+            "id": "CANOE_PROJECT",
+            "nameCN": "CANoe 工程压缩包",
+            "nameEN": "CANoe Project Archive",
+            "type": "file",
+            "fileExtension": ".zip",
+            "required": true
+        },
+        {
+            "id": "TEST_CASE_IDS",
+            "nameCN": "测试用例 ID 清单（JSON，可选）",
+            "nameEN": "Test Case ID List (JSON, optional)",
+            "type": "text_file",
+            "fileExtension": ".json",
+            "required": false
+        }
+    ],
+    "OnDeviceProperty": [
+        {
+            "id": "CANOE_SOFTWARE_POSITION",
+            "nameCN": "CANoe 可执行文件",
+            "nameEN": "CANoe Executable",
+            "type": "string_url_file",
+            "required": true
+        },
+        {
+            "id": "NEW_CANOE_WHEN_START",
+            "nameCN": "启动时新建 CANoe 实例",
+            "nameEN": "Create New CANoe Instance on Start",
+            "type": "boolean",
+            "required": true
+        }
+    ]
+}
