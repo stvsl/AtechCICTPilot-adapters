@@ -26,6 +26,9 @@
             "Executables": [
                 {
                     "DeviceProperty": "CANOE_SOFTWARE_POSITION"
+                },
+                {
+                    "DeviceProperty": "CANOE_REPORT_VIEWER_CLI"
                 }
             ],
             "AllowTerminal": false
@@ -52,6 +55,35 @@
             "type": "text_file",
             "fileExtension": ".json|.txt",
             "required": false
+        },
+        {
+            "id": "CANOE_REPORT_TYPE",
+            "nameCN": "CANoe 测试报告类型",
+            "nameEN": "CANoe Test Report Type",
+            "type": "enum_multi",
+            "values": [
+                {
+                    "id": "vtestreport",
+                    "nameCN": "CANoe 原生 VTESTReport",
+                    "nameEN": "CANoe native VTESTReport (.vtestreport)"
+                },
+                {
+                    "id": "XML",
+                    "nameCN": "CANoe XML 报告",
+                    "nameEN": "CANoe XML Report"
+                },
+                {
+                    "id": "XUnit",
+                    "nameCN": "CANoe Report Viewer XUnit 导出",
+                    "nameEN": "CANoe Report Viewer XUnit Export"
+                },
+                {
+                    "id": "PDF",
+                    "nameCN": "CANoe Report Viewer PDF 导出",
+                    "nameEN": "CANoe Report Viewer PDF Export"
+                }
+            ],
+            "required": true
         }
     ],
     "OnDeviceProperty": [
@@ -67,6 +99,14 @@
             "nameCN": "任务工作区根目录",
             "nameEN": "Task Workspace Root",
             "type": "string_url_dir",
+            "required": false
+        },
+        {
+            "id": "CANOE_REPORT_VIEWER_CLI",
+            "nameCN": "CANoe 报告查看器命令行工具",
+            "nameEN": "CANoe Report Viewer CLI",
+            "type": "string_url_file",
+            "fileExtension": ".exe",
             "required": false
         },
         {

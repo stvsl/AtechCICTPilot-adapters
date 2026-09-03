@@ -13,6 +13,21 @@ const CANOE_TEST_SETUP_READY_TIMEOUT_MS = 120000;
 const CANOE_MEASUREMENT_START_TIMEOUT_MS = 120000;
 const CANOE_POLL_INTERVAL_MS = 250;
 const CANOE_ACTIVE_OBJECT_GRACE_TIMEOUT_MS = 3000;
+const CANOE_REPORT_GENERATION_TIMEOUT_MS = 120000;
+const CANOE_REPORT_CONVERSION_TIMEOUT_MS = 120000;
+const CANOE_REPORT_FORMAT_VTESTREPORT = 1;
+const CANOE_REPORT_FORMAT_XML = 2;
+
+const REPORT_TYPE_XML = "XML";
+const REPORT_TYPE_PDF = "PDF";
+const REPORT_TYPE_XUNIT = "XUnit";
+const REPORT_TYPE_VTESTREPORT = "vtestreport";
+const SUPPORTED_REPORT_TYPES = [
+    REPORT_TYPE_XML,
+    REPORT_TYPE_PDF,
+    REPORT_TYPE_XUNIT,
+    REPORT_TYPE_VTESTREPORT
+];
 
 let application = null;
 let measurement = null;
@@ -34,12 +49,20 @@ let activeCommunicationModules = [];
 let communicationScriptUris = [];
 let communicationModuleNames = [];
 let reportObjects = [];
+let reportTypes = [];
+let nativeReportOutputs = [];
+let generatedReports = [];
+let executionFailureMessage = "";
+let reportErrors = [];
+let reportFileBaseline = [];
+let publishedArtifactUris = [];
 let launchedByTask = false;
 let attachExisting = false;
 let measurementRunning = false;
 let testStarted = false;
 let expectedResultCount = 0;
 let useProjectTestSetup = false;
+let projectTestSetupReady = false;
 let selectedTestCases = [];
 
 function debug(message) {
@@ -273,7 +296,7 @@ function propertyOr(object, names, fallback = undefined) {
 }
 
 function release(object) {
-    if (object === null) {
+    if (object === null || object === undefined) {
         return;
     }
     try {
@@ -288,7 +311,19 @@ function nativePathToWorkspaceUri(nativePath) {
         return "";
     }
     const root = fs.nativePath(projectRootUri).replace(/\\/g, "/").replace(/\/$/, "");
-    const candidate = String(nativePath).replace(/\\/g, "/");
+    let candidate = String(nativePath).trim().replace(/\\/g, "/");
+    if (candidate.toLowerCase().startsWith("file://")) {
+        candidate = candidate.substring("file://".length).replace(/^\/+/, "");
+    }
+    const isAbsolute = candidate.startsWith("/")
+        || candidate.startsWith("//") || /^[a-z]:\//i.test(candidate);
+    if (!isAbsolute) {
+        const relative = candidate.replace(/^\/+/, "");
+        if (relative.split("/").some((part) => part === "..")) {
+            return "";
+        }
+        return relative === "" ? projectRootUri : `${projectRootUri}/${relative}`;
+    }
     const lowerRoot = root.toLowerCase();
     const lowerCandidate = candidate.toLowerCase();
     if (lowerCandidate !== lowerRoot && !lowerCandidate.startsWith(`${lowerRoot}/`)) {
@@ -297,25 +332,297 @@ function nativePathToWorkspaceUri(nativePath) {
     return `${projectRootUri}/${candidate.substring(root.length).replace(/^\/+/, "")}`;
 }
 
-function reportPathUris() {
-    const paths = [];
-    if (reportUri && fs.exists(reportUri)) {
-        paths.push(reportUri);
+function appendReportObject(report) {
+    if (report !== null && report !== undefined && !reportObjects.includes(report)) {
+        reportObjects.push(report);
     }
-    const reports = testConfigurationReport === null
-        ? reportObjects : [testConfigurationReport].concat(reportObjects);
-    for (const report of reports) {
-        if (report === null || report === undefined) {
+}
+
+function adoptAutomationHandles(applicationCandidate, measurementCandidate) {
+    release(measurement);
+    release(application);
+    application = applicationCandidate;
+    measurement = measurementCandidate;
+}
+
+function refreshMeasurement() {
+    if (application === null || application === undefined) {
+        throw new Error("CANoe Automation is not connected");
+    }
+    let candidate = null;
+    try {
+        // 打开配置后 CANoe 可能重建 Measurement 对象，不能继续复用旧代理。
+        candidate = application.get("Measurement");
+        candidate.get("Running");
+        release(measurement);
+        measurement = candidate;
+        candidate = null;
+    } finally {
+        release(candidate);
+    }
+}
+
+function isTransientComFailure(error) {
+    const message = errorMessage(error);
+    return /0x800706ba|rpc|server unavailable|服务器不可用|call was rejected|调用被拒绝|server busy|服务器忙/i
+        .test(message);
+}
+
+function tryConnectToActiveAutomationServer() {
+    let candidate = null;
+    let candidateMeasurement = null;
+    try {
+        candidate = com.getActive("CANoe.Application");
+        candidateMeasurement = candidate.get("Measurement");
+        candidateMeasurement.get("Running");
+        adoptAutomationHandles(candidate, candidateMeasurement);
+        candidate = null;
+        candidateMeasurement = null;
+        return true;
+    } catch (_) {
+        release(candidateMeasurement);
+        release(candidate);
+        return false;
+    }
+}
+
+function connectWithComActivation() {
+    let createdApplication = null;
+    let createdMeasurement = null;
+    try {
+        createdApplication = com.create("CANoe.Application");
+        createdMeasurement = createdApplication.get("Measurement");
+        createdMeasurement.get("Running");
+        adoptAutomationHandles(createdApplication, createdMeasurement);
+        createdApplication = null;
+        createdMeasurement = null;
+    } catch (error) {
+        release(createdMeasurement);
+        release(createdApplication);
+        throw new Error(`Unable to connect to CANoe Automation: ${errorMessage(error)}`);
+    }
+}
+
+async function readMeasurementRunning(description) {
+    let running = false;
+    await waitUntil(() => {
+        try {
+            if (measurement === null || measurement === undefined) {
+                refreshMeasurement();
+            }
+            running = measurement.get("Running") === true;
+            return true;
+        } catch (error) {
+            if (!isTransientComFailure(error)) {
+                error.canoeFatal = true;
+                throw error;
+            }
+            // CANoe 在切换配置时会短暂撤销旧的 Automation 代理，重新绑定活动对象。
+            tryConnectToActiveAutomationServer();
+            return false;
+        }
+    }, canoeTimeout("MeasurementReadyTimeoutMs",
+                    CANOE_AUTOMATION_READY_TIMEOUT_MS), description);
+    return running;
+}
+
+async function callMeasurementCommand(command, expectedRunning) {
+    try {
+        measurement.call(command);
+        return;
+    } catch (error) {
+        if (!isTransientComFailure(error)) {
+            throw error;
+        }
+        // COM 调用可能已经在 CANoe 端生效，只是返回路径在代理切换时中断。
+        const running = await readMeasurementRunning(
+            "CANoe Measurement Automation object to recover");
+        if (running === expectedRunning) {
+            return;
+        }
+        measurement.call(command);
+    }
+}
+
+async function waitForMeasurementState(expected, timeoutMs, description) {
+    await waitUntil(() => {
+        try {
+            if (measurement === null || measurement === undefined) {
+                refreshMeasurement();
+            }
+            return measurement.get("Running") === expected;
+        } catch (error) {
+            if (!isTransientComFailure(error)) {
+                error.canoeFatal = true;
+                throw error;
+            }
+            // 轮询期间同样允许 CANoe 重建 Measurement 对象。
+            tryConnectToActiveAutomationServer();
+            return false;
+        }
+    }, timeoutMs, description);
+}
+
+function addReportError(message) {
+    const text = String(message === undefined || message === null ? "" : message).trim();
+    if (text !== "" && !reportErrors.includes(text)) {
+        reportErrors.push(text);
+    }
+}
+
+function reportsDirectoryUri() {
+    return `${projectRootUri}/reports`;
+}
+
+function reportNeedsVtestReport() {
+    return reportTypes.includes(REPORT_TYPE_VTESTREPORT)
+        || reportTypes.includes(REPORT_TYPE_PDF)
+        || reportTypes.includes(REPORT_TYPE_XUNIT)
+        || (reportTypes.includes(REPORT_TYPE_XML) && reportTypes.length > 1);
+}
+
+function nativeReportRequested() {
+    return reportTypes.length > 0;
+}
+
+function nativeReportFormat() {
+    return reportNeedsVtestReport()
+        ? CANOE_REPORT_FORMAT_VTESTREPORT : CANOE_REPORT_FORMAT_XML;
+}
+
+function isNativeReportUri(uri) {
+    const lower = String(uri === undefined || uri === null ? "" : uri)
+        .toLowerCase();
+    return lower.endsWith(".vtestreport") || lower.endsWith(".xml");
+}
+
+function likelyNativeReportUri(uri) {
+    const lower = String(uri === undefined || uri === null ? "" : uri)
+        .toLowerCase();
+    return lower.endsWith(".vtestreport")
+        || (lower.endsWith(".xml")
+            && (lower.includes("/report") || lower.includes("report.")));
+}
+
+function reportFileSnapshot() {
+    try {
+        return fs.list(projectRootUri, true)
+            .filter((entry) => entry.type === "file" && isNativeReportUri(entry.uri))
+            .map((entry) => ({
+                uri: entry.uri,
+                size: Number(entry.size) || 0,
+                modifiedAt: String(entry.modifiedAt || "")
+            }));
+    } catch (error) {
+        debug(`report discovery: unable to list project files: ${errorMessage(error)}`);
+        return [];
+    }
+}
+
+function reportFileChanged(entry) {
+    const previous = reportFileBaseline.find((candidate) =>
+        candidate.uri === entry.uri);
+    return previous === undefined
+        || previous.size !== entry.size
+        || previous.modifiedAt !== entry.modifiedAt;
+}
+
+function uniqueReportObjects() {
+    const unique = [];
+    for (const report of reportObjects) {
+        if (!unique.includes(report)) {
+            unique.push(report);
+        }
+    }
+    return unique;
+}
+
+function reportObjectWrittenUri(report) {
+    // 只读取 CANoe 生成后的只读属性，绝不改写报告对象的输出路径。
+    const nativePath = optionalProperty(report, "LastWrittenFullPath")
+        || optionalProperty(report, "LastWrittenFullName");
+    const uri = nativePathToWorkspaceUri(nativePath);
+    return uri && isNativeReportUri(uri) && fs.exists(uri) ? uri : "";
+}
+
+function discoveredNativeReportUris() {
+    const uris = [];
+    for (const report of uniqueReportObjects()) {
+        const uri = reportObjectWrittenUri(report);
+        if (uri && !uris.includes(uri)) {
+            uris.push(uri);
+        }
+    }
+    for (const entry of reportFileSnapshot()) {
+        if (!likelyNativeReportUri(entry.uri) || !reportFileChanged(entry)) {
             continue;
         }
-        const native = optionalProperty(report, "LastWrittenFullPath")
-            || optionalProperty(report, "LastWrittenFullName");
-        const uri = nativePathToWorkspaceUri(native);
-        if (uri && fs.exists(uri) && !paths.includes(uri)) {
-            paths.push(uri);
+        if (!uris.includes(entry.uri)) {
+            uris.push(entry.uri);
         }
     }
-    return paths;
+    return uris;
+}
+
+
+function configureNativeReports() {
+    nativeReportOutputs = [];
+    reportFileBaseline = reportFileSnapshot();
+    if (!nativeReportRequested()) {
+        return;
+    }
+    const reports = uniqueReportObjects();
+    if (reports.length === 0) {
+        addReportError("CANoe did not expose a report object for the selected report type");
+        return;
+    }
+
+    const format = nativeReportFormat();
+    for (const report of reports) {
+        try {
+            report.set("Enabled", true);
+        } catch (error) {
+            debug(`configure report: unable to enable report: ${errorMessage(error)}`);
+        }
+        try {
+            // eReportFormat：cReportFormatVTestReport=1，cReportFormatXml=2。
+            report.set("ReportFormat", format);
+        } catch (error) {
+            // TestReport/TestUnitReport 在部分版本没有 ReportFormat，继续使用工程配置。
+            debug(`configure report: ReportFormat is unavailable: ${errorMessage(error)}`);
+        }
+        nativeReportOutputs.push({report});
+    }
+}
+
+async function generateNativeReports() {
+    if (!nativeReportRequested() || nativeReportOutputs.length === 0) {
+        return discoveredNativeReportUris();
+    }
+    for (const output of nativeReportOutputs) {
+        try {
+            output.report.call("GenerateReport");
+        } catch (error) {
+            // 测试配置报告通常会在测试结束时自动生成，调用失败不应中断测试结果收集。
+            debug(`generate report: waiting for CANoe automatic output: ${errorMessage(error)}`);
+        }
+    }
+
+    let reportUris = discoveredNativeReportUris();
+    if (reportUris.length === 0) {
+        try {
+            await waitUntil(() => {
+                reportUris = discoveredNativeReportUris();
+                return reportUris.length > 0;
+            }, canoeTimeout("ReportGenerationTimeoutMs",
+                            CANOE_REPORT_GENERATION_TIMEOUT_MS),
+            "CANoe reports to be generated");
+        } catch (error) {
+            addReportError(errorMessage(error));
+            return [];
+        }
+    }
+    return reportUris;
 }
 
 function parseIds(uri) {
@@ -579,15 +886,19 @@ function publishTestCaseResult(result, sequence, total) {
     task.info(`[CANoe result] ${sequence}/${total}: ${result.id} - ${result.verdict}`);
 }
 
-function writeResultsReport() {
+function writeResultsReport(publish = true) {
     const source = `${projectRootUri}/test-results.json`;
-    const passed = results.length > 0 && results.every((item) => item.passed);
+    const passed = testPassed();
     fs.writeText(source, JSON.stringify({
         taskId: task.id(),
         status: passed ? "passed" : "failed",
+        reportErrors: reportErrors.slice(),
         results
     }, null, 2));
     reportUri = source;
+    if (!publish) {
+        return;
+    }
     const destination = "artifact://canoe-test/test-results.json";
     fs.copy(source, destination, true);
     task.publish("REPORT_URI",
@@ -596,21 +907,165 @@ function writeResultsReport() {
                  "application/json");
 }
 
+function testPassed() {
+    return results.length > 0 && results.every((item) => item.passed);
+}
+
+
+function addGeneratedReport(type, uri) {
+    if (!generatedReports.some((report) => report.type === type && report.uri === uri)) {
+        generatedReports.push({type, uri});
+    }
+}
+
+function reportViewerExecutable() {
+    const executable = optionalDevice("CANOE_REPORT_VIEWER_CLI");
+    if (executable === undefined || executable === null
+            || String(executable).trim() === "") {
+        throw new Error(
+            "CANOE_REPORT_VIEWER_CLI must be configured for the selected CANoe report export");
+    }
+    return String(executable);
+}
+
+
+function reportViewerFailure(result, type) {
+    const details = [result.standardError, result.standardOutput]
+        .map((value) => String(value === undefined || value === null ? "" : value).trim())
+        .filter((value) => value !== "")
+        .join("; ");
+    const suffix = details === "" ? "" : `: ${details}`;
+    return `CANoe Report Viewer failed to create ${type} (exit code ${result.exitCode})${suffix}`;
+}
+
+function runReportViewer(nativeReportUri, option, outputUri, type, executable) {
+    const result = cli.run({
+        executable,
+        arguments: [
+            `-r=${fs.nativePath(nativeReportUri)}`,
+            `${option}=${fs.nativePath(outputUri)}`
+        ],
+        workingDirectoryUri: projectRootUri,
+        timeoutMs: canoeTimeout("ReportConversionTimeoutMs",
+                                CANOE_REPORT_CONVERSION_TIMEOUT_MS)
+    });
+    if (result.crashed || result.exitCode !== 0) {
+        throw new Error(reportViewerFailure(result, type));
+    }
+    if (!fs.exists(outputUri)) {
+        throw new Error(`CANoe Report Viewer did not create the requested ${type} report`);
+    }
+}
+
+function reportOutputUri(type, index, total) {
+    const suffix = total === 1 ? "" : `-${index + 1}`;
+    if (type === REPORT_TYPE_XUNIT) {
+        return `${reportsDirectoryUri()}/canoe-test.xunit${suffix}.xml`;
+    }
+    return `${reportsDirectoryUri()}/canoe-test${suffix}.${type.toLowerCase()}`;
+}
+
+function registerNativeReports(nativeReportUris) {
+    for (const uri of nativeReportUris) {
+        const lower = uri.toLowerCase();
+        if (reportTypes.includes(REPORT_TYPE_VTESTREPORT)
+                && lower.endsWith(".vtestreport")) {
+            addGeneratedReport(REPORT_TYPE_VTESTREPORT, uri);
+        }
+        if (reportTypes.includes(REPORT_TYPE_XML) && lower.endsWith(".xml")) {
+            addGeneratedReport(REPORT_TYPE_XML, uri);
+        }
+    }
+}
+
+function viewerInputUris(nativeReportUris) {
+    const vtestReports = nativeReportUris.filter((uri) =>
+        uri.toLowerCase().endsWith(".vtestreport"));
+    return vtestReports.length > 0 ? vtestReports : nativeReportUris;
+}
+
+function convertNativeReports(nativeReportUris, type, option) {
+    if (!reportTypes.includes(type) || nativeReportUris.length === 0) {
+        return;
+    }
+    let executable;
+    try {
+        executable = reportViewerExecutable();
+    } catch (error) {
+        addReportError(errorMessage(error));
+        return;
+    }
+    const inputs = viewerInputUris(nativeReportUris);
+    fs.mkdir(reportsDirectoryUri());
+    for (let index = 0; index < inputs.length; ++index) {
+        task.checkCancelled();
+        const outputUri = reportOutputUri(type, index, inputs.length);
+        try {
+            runReportViewer(inputs[index], option, outputUri, type, executable);
+            addGeneratedReport(type, outputUri);
+        } catch (error) {
+            if (task.isCancelled()) {
+                throw error;
+            }
+            addReportError(errorMessage(error));
+            task.warning(errorMessage(error));
+        }
+    }
+}
+
+async function generateSelectedReports() {
+    const nativeReportUris = await generateNativeReports();
+    registerNativeReports(nativeReportUris);
+
+    if (nativeReportUris.length === 0 && reportTypes.length > 0) {
+        addReportError("CANoe did not generate a native test report");
+    }
+    if (reportTypes.includes(REPORT_TYPE_VTESTREPORT)
+            && !nativeReportUris.some((uri) =>
+                uri.toLowerCase().endsWith(".vtestreport"))) {
+        addReportError("CANoe did not generate the requested vtestreport output");
+    }
+    if (reportTypes.includes(REPORT_TYPE_XML)
+            && !nativeReportUris.some((uri) => uri.toLowerCase().endsWith(".xml"))) {
+        convertNativeReports(nativeReportUris, REPORT_TYPE_XML, "-e");
+    }
+    convertNativeReports(nativeReportUris, REPORT_TYPE_XUNIT, "--xunit");
+    convertNativeReports(nativeReportUris, REPORT_TYPE_PDF, "-p");
+}
+
 function elementsFor(object) {
     return propertyOr(object, ["Elements", "Sequence"], null);
+}
+
+function communicationModuleKey(module) {
+    return normalize(optionalProperty(module, "Name") || "");
+}
+
+function appendCommunicationModule(modules, module) {
+    const key = communicationModuleKey(module);
+    if (modules.includes(module)) {
+        return;
+    }
+    if (key !== "" && modules.some((candidate) =>
+            communicationModuleKey(candidate) === key)) {
+        // 同一测试模块可能同时暴露在 TestModules 与 Items 集合中。
+        release(module);
+        return;
+    }
+    modules.push(module);
 }
 
 function collectCommunicationModules(environment, output) {
     const modules = optionalProperty(environment, "TestModules");
     for (const module of collectionItems(modules)) {
-        output.push(module);
+        appendCommunicationModule(output, module);
     }
     const items = optionalProperty(environment, "Items");
     for (const item of collectionItems(items)) {
         const nestedItems = optionalProperty(item, "Items");
         const sequence = propertyOr(item, ["Sequence", "Elements"], null);
         if (sequence !== null && sequence !== undefined) {
-            output.push(item);
+            appendCommunicationModule(output, item);
         } else if (nestedItems !== null && nestedItems !== undefined) {
             collectCommunicationModules(item, output);
         }
@@ -700,7 +1155,7 @@ function configureVtest() {
     expectedResultCount = selectedTestCases.length;
     testConfigurationReport = optionalProperty(testConfiguration, "Report");
     if (testConfigurationReport !== undefined && testConfigurationReport !== null) {
-        reportObjects.push(testConfigurationReport);
+        appendReportObject(testConfigurationReport);
     }
 }
 
@@ -725,6 +1180,7 @@ function configureCommunication() {
         } catch (_) {
             // TestEnvironment.Enabled is not writable in some CANoe releases.
         }
+        appendReportObject(propertyOr(environment, ["Report"], null));
         collectCommunicationModules(environment, communicationModules);
     }
     const selected = [];
@@ -765,9 +1221,7 @@ function configureCommunication() {
             }
         }
         const report = propertyOr(module, ["Report"], null);
-        if (report !== null && report !== undefined) {
-            reportObjects.push(report);
-        }
+        appendReportObject(report);
     }
     if (selected.length === 0) {
         throw new Error("No enabled CANoe communication test case matches TEST_CASE_IDS");
@@ -808,8 +1262,14 @@ function hasProjectTestSetup() {
     if (environments !== null && environments !== undefined
             && collectionCount(environments) > 0) {
         const environment = collectionItems(environments)[0];
-        return environment !== undefined
-            && optionalProperty(environment, "TestModules") !== undefined;
+        if (environment === undefined) {
+            return false;
+        }
+        // 不同 CANoe 版本会把通信测试模块暴露为 TestModules 或 Items。
+        const modules = optionalProperty(environment, "TestModules");
+        const items = optionalProperty(environment, "Items");
+        return (modules !== undefined && modules !== null)
+            || (items !== undefined && items !== null);
     }
 
     const configurations = optionalProperty(configuration, "TestConfigurations");
@@ -848,7 +1308,7 @@ async function waitUntil(predicate, timeoutMs, description) {
 }
 
 async function waitForProjectTestSetup() {
-    if (!useProjectTestSetup) {
+    if (!useProjectTestSetup || projectTestSetupReady) {
         return;
     }
     debug("openConfiguration: waiting for project test setup");
@@ -856,6 +1316,7 @@ async function waitForProjectTestSetup() {
                     canoeTimeout("TestSetupReadyTimeoutMs",
                                  CANOE_TEST_SETUP_READY_TIMEOUT_MS),
                     "CANoe project test setup to finish loading");
+    projectTestSetupReady = true;
 }
 
 function errorMessage(error) {
@@ -864,6 +1325,62 @@ function errorMessage(error) {
 
 function isTransientOpenFailure(error) {
     return /COM invocation failed/i.test(errorMessage(error));
+}
+
+function configureModuleExecution(module) {
+    try {
+        module.set("ExecuteRepeatedly", false);
+    } catch (error) {
+        // 部分 CANoe 版本或通信测试模块不支持该属性，继续使用工程配置的执行模式。
+        task.warning("CANoe test module does not support ExecuteRepeatedly; "
+            + `using its configured execution mode: ${errorMessage(error)}`);
+    }
+}
+
+function optionalDevice(key) {
+    try {
+        return task.device(key);
+    } catch (_) {
+        return "";
+    }
+}
+
+function optionalRequirementText(key) {
+    const value = optionalRequirement(key);
+    if (value === undefined || value === null || String(value).trim() === "") {
+        return "";
+    }
+    try {
+        if (fs.exists(value)) {
+            return fs.readText(value);
+        }
+    } catch (_) {
+        // 调试运行时可以直接传入字面量。
+    }
+    return String(value);
+}
+
+function parseReportTypes(value) {
+    const selected = [];
+    for (const entry of String(value === undefined || value === null ? "" : value)
+        .split(",")) {
+        const normalized = normalize(entry);
+        if (normalized === "") {
+            continue;
+        }
+        const reportType = SUPPORTED_REPORT_TYPES.find((candidate) =>
+            normalize(candidate) === normalized);
+        if (reportType === undefined) {
+            throw new Error(`CANOE_REPORT_TYPE contains an unsupported value: ${entry.trim()}`);
+        }
+        if (!selected.includes(reportType)) {
+            selected.push(reportType);
+        }
+    }
+    if (selected.length === 0) {
+        throw new Error("CANOE_REPORT_TYPE must select at least one report type");
+    }
+    return selected;
 }
 
 function checkOpenResult(resultOverride) {
@@ -901,56 +1418,50 @@ function checkOpenResult(resultOverride) {
 
 async function waitForConfigurationReady() {
     await waitUntil(() => {
-        if (configuration === null) {
-            const opened = application.get("Configuration");
-            if (opened === null || opened === undefined) {
-                return false;
+        try {
+            if (configuration === null) {
+                const opened = application.get("Configuration");
+                if (opened === null || opened === undefined) {
+                    return false;
+                }
+                configuration = opened;
             }
-            configuration = opened;
+            return checkOpenResult();
+        } catch (error) {
+            if (!isTransientComFailure(error)) {
+                error.canoeFatal = true;
+                throw error;
+            }
+            // Open 期间 Application 也可能被 CANoe 重建；下一轮从 ROT 获取新代理。
+            if (tryConnectToActiveAutomationServer()) {
+                release(configuration);
+                configuration = null;
+            }
+            return false;
         }
-        return checkOpenResult();
     }, canoeTimeout("ConfigurationReadyTimeoutMs",
                     CANOE_CONFIGURATION_READY_TIMEOUT_MS),
     "CANoe configuration to finish loading");
 }
 
 async function stopMeasurementBeforeOpening() {
-    if (measurement === null) {
-        measurement = application.get("Measurement");
-    }
-    if (measurement.get("Running") !== true) {
+    const running = await readMeasurementRunning(
+        "CANoe Measurement Automation object to become available");
+    if (!running) {
         return;
     }
     debug("openConfiguration: stopping existing measurement");
-    measurement.call("Stop");
-    await waitUntil(() => measurement.get("Running") !== true,
-                    canoeTimeout("MeasurementStopTimeoutMs",
-                                 CANOE_MEASUREMENT_STOP_TIMEOUT_MS),
-                    "CANoe Measurement to stop before opening the configuration");
+    await callMeasurementCommand("Stop", false);
+    await waitForMeasurementState(
+        false,
+        canoeTimeout("MeasurementStopTimeoutMs",
+                     CANOE_MEASUREMENT_STOP_TIMEOUT_MS),
+        "CANoe Measurement to stop before opening the configuration");
 }
 
 async function waitForAutomationServer() {
-    let candidate = null;
-    await waitUntil(() => {
-        try {
-            // CANoe started with -embedding may publish itself in the ROT
-            // slightly later. Activating the ProgID here would create a
-            // second CANoe process while the launched one is still starting.
-            candidate = com.getActive("CANoe.Application");
-            const candidateMeasurement = candidate.get("Measurement");
-            candidateMeasurement.get("Running");
-            release(measurement);
-            measurement = candidateMeasurement;
-            release(application);
-            application = candidate;
-            candidate = null;
-            return true;
-        } catch (_) {
-            release(candidate);
-            candidate = null;
-            return false;
-        }
-    }, canoeTimeout("AutomationReadyTimeoutMs",
+    await waitUntil(tryConnectToActiveAutomationServer,
+                    canoeTimeout("AutomationReadyTimeoutMs",
                     CANOE_AUTOMATION_READY_TIMEOUT_MS),
     "CANoe Automation server to become available");
 }
@@ -960,31 +1471,15 @@ async function connectToStartedAutomationServer() {
     debug("connect: checking whether the started CANoe instance is active");
     while (Date.now() - started < CANOE_ACTIVE_OBJECT_GRACE_TIMEOUT_MS) {
         task.checkCancelled();
-        let candidate = null;
-        let candidateMeasurement = null;
-        try {
-            candidate = com.getActive("CANoe.Application");
-            candidateMeasurement = candidate.get("Measurement");
-            candidateMeasurement.get("Running");
-            release(measurement);
-            measurement = candidateMeasurement;
-            candidateMeasurement = null;
-            release(application);
-            application = candidate;
-            candidate = null;
+        if (tryConnectToActiveAutomationServer()) {
             return;
-        } catch (_) {
-            release(candidateMeasurement);
-            release(candidate);
-            await task.delay(CANOE_POLL_INTERVAL_MS);
         }
+        await task.delay(CANOE_POLL_INTERVAL_MS);
     }
 
-    // Some CANoe versions started with -embedding do not publish an Active
-    // Object in the ROT. COM activation connects to their local server once
-    // it has registered its class object.
+    // 部分 CANoe 版本不会把 -embedding 实例及时注册到 ROT，只能通过 ProgID 激活。
     debug("connect: calling com.create(CANoe.Application)");
-    application = com.create("CANoe.Application");
+    connectWithComActivation();
 }
 
 async function openConfiguration() {
@@ -1000,6 +1495,9 @@ async function openConfiguration() {
     // The task workspace is disposable, so CANoe may persist an upgraded
     // configuration there. Keep prompts disabled for unattended execution.
     await stopMeasurementBeforeOpening();
+    // Application.Open 会替换 Measurement 子对象，主动释放旧代理，避免后续访问失效句柄。
+    release(measurement);
+    measurement = null;
     try {
         debug(`openConfiguration: calling Application.Open (${configurationUri})`);
         const openResult = application.call(
@@ -1028,6 +1526,13 @@ export async function prepare(projectPackage) {
     communicationScriptUris = [];
     communicationModuleNames = [];
     reportObjects = [];
+    reportTypes = [];
+    nativeReportOutputs = [];
+    generatedReports = [];
+    executionFailureMessage = "";
+    reportErrors = [];
+    reportFileBaseline = [];
+    publishedArtifactUris = [];
     testMode = "";
     requestedIds = [];
     results = [];
@@ -1035,6 +1540,7 @@ export async function prepare(projectPackage) {
     expectedResultCount = 0;
     selectedTestCases = [];
     useProjectTestSetup = false;
+    projectTestSetupReady = false;
     attachExisting = false;
 
     debug("prepare: extracting project package");
@@ -1076,7 +1582,8 @@ export async function prepare(projectPackage) {
     if (requestedIds.length === 0 && Array.isArray(projectDescriptor.TestCaseIds)) {
         requestedIds = projectDescriptor.TestCaseIds.map((id) => String(id));
     }
-    debug(`prepare: completed (mode=${testMode}, requestedCases=${requestedIds.length})`);
+    reportTypes = parseReportTypes(optionalRequirementText("CANOE_REPORT_TYPE"));
+    debug(`prepare: completed (mode=${testMode}, requestedCases=${requestedIds.length}, reports=${reportTypes.join(",")})`);
     task.progress(5);
 }
 
@@ -1119,19 +1626,19 @@ export async function connect() {
 export async function startMeasurement() {
     debug("startMeasurement: starting");
     await openConfiguration();
-    if (measurement === null) {
-        measurement = application.get("Measurement");
-    }
-    if (measurement.get("Running") !== true) {
+    let running = await readMeasurementRunning(
+        "CANoe Measurement Automation object to become available");
+    if (!running) {
         debug("startMeasurement: calling Measurement.Start");
-        measurement.call("Start");
+        await callMeasurementCommand("Start", true);
     } else {
         debug("startMeasurement: measurement is already running");
     }
-    await waitUntil(() => measurement.get("Running") === true,
-                    canoeTimeout("MeasurementStartTimeoutMs",
-                                 CANOE_MEASUREMENT_START_TIMEOUT_MS),
-                    "CANoe Measurement to start");
+    await waitForMeasurementState(
+        true,
+        canoeTimeout("MeasurementStartTimeoutMs",
+                     CANOE_MEASUREMENT_START_TIMEOUT_MS),
+        "CANoe Measurement to start");
     measurementRunning = true;
     debug("startMeasurement: completed");
     task.progress(10);
@@ -1147,6 +1654,7 @@ export async function configure() {
     } else {
         configureVtest();
     }
+    configureNativeReports();
     debug(`configure: completed (mode=${testMode})`);
     task.progress(15);
 }
@@ -1166,7 +1674,7 @@ export async function execute() {
         for (const module of activeCommunicationModules) {
             const expectedModuleResultCount = selectedCaseCount([module]);
             debug("execute: starting communication test module");
-            module.set("ExecuteRepeatedly", false);
+            configureModuleExecution(module);
             module.call("Start");
             testStarted = true;
             while (objectRunning(module, true)
@@ -1204,42 +1712,120 @@ export async function execute() {
         }
     }
     publishCompletedResults(collectVerdicts());
-    writeResultsReport();
+    writeResultsReport(false);
+    try {
+        await generateSelectedReports();
+    } catch (error) {
+        if (task.isCancelled()) {
+            throw error;
+        }
+        addReportError(errorMessage(error));
+        task.warning(`CANoe report generation failed: ${errorMessage(error)}`);
+    }
     debug(`execute: completed (results=${results.length})`);
-    const passed = results.length > 0 && results.every((item) => item.passed);
+    const passed = testPassed();
     if (!passed) {
-        throw new Error("One or more CANoe test cases failed");
+        executionFailureMessage = "One or more CANoe test cases failed";
+        task.error(executionFailureMessage);
     }
     task.progress(95);
 }
 
-export async function collectArtifacts() {
-    debug("collectArtifacts: starting");
-    const paths = Array.isArray(projectDescriptor && projectDescriptor.Artifacts)
-        ? projectDescriptor.Artifacts.slice() : [];
-    const prefix = `${projectRootUri}/`;
-    for (const finalReport of reportPathUris()) {
-        if (finalReport && finalReport.startsWith(prefix)) {
-            const relative = finalReport.substring(prefix.length);
-            if (!paths.includes(relative)) {
-                paths.push(relative);
-            }
-        }
+function reportMediaType(type) {
+    if (type === REPORT_TYPE_XML) {
+        return "application/xml";
     }
-    for (const path of paths) {
-        const relative = requireSafeRelativePath(path, "Artifacts entry");
-        const source = `${projectRootUri}/${relative}`;
-        if (!fs.exists(source)) {
-            task.warning(`CANoe test artifact is missing: ${relative}`);
+    if (type === REPORT_TYPE_XUNIT) {
+        return "application/xml";
+    }
+    if (type === REPORT_TYPE_PDF) {
+        return "application/pdf";
+    }
+    return "application/octet-stream";
+}
+
+function publishArtifact(source, relative, publicationId, mediaType) {
+    const destination = `artifact://canoe-test/${relative}`;
+    if (publishedArtifactUris.includes(destination)) {
+        return;
+    }
+    fs.copy(source, destination, true);
+    publishedArtifactUris.push(destination);
+    task.publish(publicationId, destination, baseName(relative), mediaType);
+}
+
+function publishSelectedReports() {
+    const typeCounts = {};
+    for (const report of generatedReports) {
+        if (!fs.exists(report.uri)) {
+            addReportError(`Requested CANoe ${report.type} report is missing`);
             continue;
         }
-        const destination = `artifact://canoe-test/${relative}`;
-        fs.copy(source, destination, true);
-        task.publish(source === reportUri ? "REPORT_URI" : `ARTIFACT:${relative}`,
-                     destination,
-                     baseName(relative),
-                     relative.toLowerCase().endsWith(".json")
-                         ? "application/json" : "application/octet-stream");
+        try {
+            const relative = relativePath(projectRootUri, report.uri);
+            const count = (typeCounts[report.type] || 0) + 1;
+            typeCounts[report.type] = count;
+            const publicationId = count === 1
+                ? `CANOE_REPORT:${report.type}`
+                : `CANOE_REPORT:${report.type}:${count}`;
+            publishArtifact(report.uri, relative, publicationId,
+                            reportMediaType(report.type));
+        } catch (error) {
+            addReportError(`Unable to publish CANoe ${report.type} report: ${errorMessage(error)}`);
+        }
+    }
+}
+
+export async function collectArtifacts() {
+    debug("collectArtifacts: starting");
+    if (!reportUri) {
+        try {
+            writeResultsReport(false);
+        } catch (error) {
+            addReportError(`Unable to write CANoe execution summary: ${errorMessage(error)}`);
+        }
+    }
+    if (reportUri && fs.exists(reportUri)) {
+        try {
+            publishArtifact(reportUri,
+                            relativePath(projectRootUri, reportUri),
+                            "REPORT_URI",
+                            "application/json");
+        } catch (error) {
+            addReportError(`Unable to publish CANoe execution summary: ${errorMessage(error)}`);
+        }
+    }
+    publishSelectedReports();
+    const paths = Array.isArray(projectDescriptor && projectDescriptor.Artifacts)
+        ? projectDescriptor.Artifacts.slice() : [];
+    for (const path of paths) {
+        try {
+            const relative = requireSafeRelativePath(path, "Artifacts entry");
+            const source = `${projectRootUri}/${relative}`;
+            if (source === reportUri) {
+                continue;
+            }
+            if (!fs.exists(source)) {
+                task.warning(`CANoe test artifact is missing: ${relative}`);
+                continue;
+            }
+            publishArtifact(source,
+                            relative,
+                            `ARTIFACT:${relative}`,
+                            relative.toLowerCase().endsWith(".json")
+                                ? "application/json" : "application/octet-stream");
+        } catch (error) {
+            task.warning(`Unable to publish CANoe test artifact: ${errorMessage(error)}`);
+        }
+    }
+    const failures = [];
+    if (executionFailureMessage !== "") {
+        failures.push(executionFailureMessage);
+    }
+    failures.push(...reportErrors);
+    if (failures.length > 0) {
+        task.progress(100);
+        throw new Error(failures.join("; "));
     }
     debug(`collectArtifacts: completed (paths=${paths.length})`);
     task.progress(100);
@@ -1310,11 +1896,19 @@ export async function cleanup() {
     communicationModules = [];
     activeCommunicationModules = [];
     reportObjects = [];
+    reportTypes = [];
+    nativeReportOutputs = [];
+    generatedReports = [];
+    executionFailureMessage = "";
+    reportErrors = [];
+    reportFileBaseline = [];
+    publishedArtifactUris = [];
     canoeProcess = null;
     measurementRunning = false;
     testStarted = false;
     launchedByTask = false;
     attachExisting = false;
     useProjectTestSetup = false;
+    projectTestSetupReady = false;
     debug("cleanup: completed");
 }

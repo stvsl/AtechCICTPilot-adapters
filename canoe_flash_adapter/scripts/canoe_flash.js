@@ -379,7 +379,7 @@ async function waitUntil(predicate, timeoutMs, description, ignoreCancellation =
 }
 
 function release(object) {
-    if (object === null) {
+    if (object === null || object === undefined) {
         return;
     }
     try {
@@ -387,6 +387,130 @@ function release(object) {
     } catch (_) {
         // The host also releases all remaining handles after the stage.
     }
+}
+
+function adoptAutomationHandles(applicationCandidate, measurementCandidate) {
+    release(measurement);
+    release(application);
+    application = applicationCandidate;
+    measurement = measurementCandidate;
+}
+
+function refreshMeasurement() {
+    if (application === null || application === undefined) {
+        throw new Error("CANoe Automation is not connected");
+    }
+    let candidate = null;
+    try {
+        // 打开配置后 CANoe 可能重建 Measurement 对象，不能继续复用旧代理。
+        candidate = application.get("Measurement");
+        candidate.get("Running");
+        release(measurement);
+        measurement = candidate;
+        candidate = null;
+    } finally {
+        release(candidate);
+    }
+}
+
+function isTransientComFailure(error) {
+    const message = errorMessage(error);
+    return /0x800706ba|rpc|server unavailable|服务器不可用|call was rejected|调用被拒绝|server busy|服务器忙/i
+        .test(message);
+}
+
+function tryConnectToActiveAutomationServer() {
+    let candidate = null;
+    let candidateMeasurement = null;
+    try {
+        candidate = com.getActive("CANoe.Application");
+        candidateMeasurement = candidate.get("Measurement");
+        candidateMeasurement.get("Running");
+        adoptAutomationHandles(candidate, candidateMeasurement);
+        candidate = null;
+        candidateMeasurement = null;
+        return true;
+    } catch (_) {
+        release(candidateMeasurement);
+        release(candidate);
+        return false;
+    }
+}
+
+function connectWithComActivation() {
+    let createdApplication = null;
+    let createdMeasurement = null;
+    try {
+        createdApplication = com.create("CANoe.Application");
+        createdMeasurement = createdApplication.get("Measurement");
+        createdMeasurement.get("Running");
+        adoptAutomationHandles(createdApplication, createdMeasurement);
+        createdApplication = null;
+        createdMeasurement = null;
+    } catch (error) {
+        release(createdMeasurement);
+        release(createdApplication);
+        throw new Error(`Unable to connect to CANoe Automation: ${errorMessage(error)}`);
+    }
+}
+
+async function readMeasurementRunning(description) {
+    let running = false;
+    await waitUntil(() => {
+        try {
+            if (measurement === null || measurement === undefined) {
+                refreshMeasurement();
+            }
+            running = measurement.get("Running") === true;
+            return true;
+        } catch (error) {
+            if (!isTransientComFailure(error)) {
+                error.canoeFatal = true;
+                throw error;
+            }
+            // CANoe 在切换配置时会短暂撤销旧的 Automation 代理，重新绑定活动对象。
+            tryConnectToActiveAutomationServer();
+            return false;
+        }
+    }, CANOE_AUTOMATION_READY_TIMEOUT_MS, description);
+    return running;
+}
+
+async function callMeasurementCommand(command, expectedRunning) {
+    try {
+        measurement.call(command);
+        return;
+    } catch (error) {
+        if (!isTransientComFailure(error)) {
+            throw error;
+        }
+        // COM 调用可能已经在 CANoe 端生效，只是返回路径在代理切换时中断。
+        const running = await readMeasurementRunning(
+            "CANoe Measurement Automation object to recover");
+        if (running === expectedRunning) {
+            return;
+        }
+        measurement.call(command);
+    }
+}
+
+async function waitForMeasurementState(expected, timeoutMs, description) {
+    await waitUntil(() => {
+        try {
+            if (measurement === null || measurement === undefined) {
+                refreshMeasurement();
+            }
+            return measurement.get("Running") === expected;
+        } catch (error) {
+            if (!isTransientComFailure(error)) {
+                error.canoeFatal = true;
+                throw error;
+            }
+            // 轮询期间同样允许 CANoe 重建 Measurement 对象。
+            tryConnectToActiveAutomationServer();
+            return false;
+        }
+    }, timeoutMs, description);
 }
 
 function errorMessage(error) {
@@ -444,84 +568,64 @@ async function waitForFlashTestSetup() {
 
 async function waitForConfigurationReady() {
     await waitUntil(() => {
-        if (configuration === null) {
+        try {
+            if (configuration === null) {
             const opened = application.get("Configuration");
             if (opened === null || opened === undefined) {
                 return false;
             }
-            configuration = opened;
+                configuration = opened;
+            }
+            return checkOpenResult();
+        } catch (error) {
+            if (!isTransientComFailure(error)) {
+                error.canoeFatal = true;
+                throw error;
+            }
+            // Open 期间 Application 也可能被 CANoe 重建；下一轮从 ROT 获取新代理。
+            if (tryConnectToActiveAutomationServer()) {
+                release(configuration);
+                configuration = null;
+            }
+            return false;
         }
-        return checkOpenResult();
     }, CANOE_CONFIGURATION_READY_TIMEOUT_MS,
     "CANoe configuration to finish loading");
 }
 
 async function stopMeasurementBeforeOpening() {
-    if (measurement === null) {
-        measurement = application.get("Measurement");
-    }
-    if (measurement.get("Running") !== true) {
+    const running = await readMeasurementRunning(
+        "CANoe Measurement Automation object to become available");
+    if (!running) {
         return;
     }
-    measurement.call("Stop");
-    await waitUntil(() => measurement.get("Running") !== true,
-                    CANOE_MEASUREMENT_STOP_TIMEOUT_MS,
-                    "CANoe Measurement to stop before opening the configuration");
+    await callMeasurementCommand("Stop", false);
+    await waitForMeasurementState(
+        false,
+        CANOE_MEASUREMENT_STOP_TIMEOUT_MS,
+        "CANoe Measurement to stop before opening the configuration");
 }
 
 async function waitForAutomationServer() {
-    let candidate = null;
-    await waitUntil(() => {
-        try {
-            // CANoe started with -embedding can take time to publish its
-            // Automation object. Activating the ProgID here would launch a
-            // second CANoe process if the first one is not ready yet.
-            candidate = com.getActive("CANoe.Application");
-            const candidateMeasurement = candidate.get("Measurement");
-            candidateMeasurement.get("Running");
-            release(measurement);
-            measurement = candidateMeasurement;
-            release(application);
-            application = candidate;
-            candidate = null;
-            return true;
-        } catch (_) {
-            release(candidate);
-            candidate = null;
-            return false;
-        }
-    }, CANOE_AUTOMATION_READY_TIMEOUT_MS,
+    await waitUntil(tryConnectToActiveAutomationServer,
+                    CANOE_AUTOMATION_READY_TIMEOUT_MS,
     "CANoe Automation server to become available");
 }
 
 async function connectToStartedAutomationServer() {
     const started = Date.now();
+    debug("connect: checking whether the started CANoe instance is active");
     while (Date.now() - started < CANOE_ACTIVE_OBJECT_GRACE_TIMEOUT_MS) {
         task.checkCancelled();
-        let candidate = null;
-        let candidateMeasurement = null;
-        try {
-            candidate = com.getActive("CANoe.Application");
-            candidateMeasurement = candidate.get("Measurement");
-            candidateMeasurement.get("Running");
-            release(measurement);
-            measurement = candidateMeasurement;
-            candidateMeasurement = null;
-            release(application);
-            application = candidate;
-            candidate = null;
+        if (tryConnectToActiveAutomationServer()) {
             return;
-        } catch (_) {
-            release(candidateMeasurement);
-            release(candidate);
-            await task.delay(CANOE_POLL_INTERVAL_MS);
         }
+        await task.delay(CANOE_POLL_INTERVAL_MS);
     }
 
-    // Some CANoe versions started with -embedding do not publish an Active
-    // Object in the ROT. COM activation connects to their local server once
-    // it has registered its class object.
-    application = com.create("CANoe.Application");
+    // 部分 CANoe 版本不会把 -embedding 实例及时注册到 ROT，只能通过 ProgID 激活。
+    debug("connect: calling com.create(CANoe.Application)");
+    connectWithComActivation();
 }
 
 async function openConfiguration() {
@@ -536,6 +640,9 @@ async function openConfiguration() {
     // The task workspace is disposable, so CANoe may persist an upgraded
     // configuration there. Keep prompts disabled for unattended execution.
     await stopMeasurementBeforeOpening();
+    // Application.Open 会替换 Measurement 子对象，主动释放旧代理，避免后续访问失效句柄。
+    release(measurement);
+    measurement = null;
     try {
         application.call("Open", fs.nativePath(configurationUri), true, false);
     } catch (error) {
@@ -654,13 +761,15 @@ export async function connect() {
 
 export async function startMeasurement() {
     await openConfiguration();
-    measurement = application.get("Measurement");
-    if (measurement.get("Running") !== true) {
-        measurement.call("Start");
+    let running = await readMeasurementRunning(
+        "CANoe Measurement Automation object to become available");
+    if (!running) {
+        await callMeasurementCommand("Start", true);
     }
-    await waitUntil(() => measurement.get("Running") === true,
-                    DEFAULT_CONFIGURATION_TIMEOUT_MS,
-                    "CANoe Measurement to start");
+    await waitForMeasurementState(
+        true,
+        DEFAULT_CONFIGURATION_TIMEOUT_MS,
+        "CANoe Measurement to start");
     measurementRunning = true;
     task.progress(10);
 }
