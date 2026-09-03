@@ -1,0 +1,70 @@
+{
+    "ManifestVersion": 2,
+    "PackageId": "vcar_ea_adapter",
+    "PackageNameCN": "VCarEA MQTT 适配器",
+    "PackageNameEN": "VCarEA MQTT Adapter",
+    "PackageVersion": "1.0.0",
+    "DescriptionCN": "通过 MQTT 调用 VCarEA 外部接口执行 Case 或 Plan",
+    "DescriptionEN": "Execute VCarEA cases or plans through its MQTT API",
+    "Author": "DOTRUST",
+    "NodeType": "Test",
+    "NodeAdapterNameCN": "VCarEA",
+    "NodeAdapterNameEN": "VCarEA",
+    "Runtime": {
+        "ApiVersion": "1.0",
+        "Language": "javascript",
+        "Workflow": "workflow.json"
+    },
+    "Permissions": {
+        "MQTT": {
+            "ProtocolVersion": "3.1.1"
+        }
+    },
+    "CallingRuntime": [
+        "MQTT"
+    ],
+    "SelfExaminationAbility": true,
+    "RequirementProperty": [
+        {
+            "id": "EA_PROJECT",
+            "nameCN": "VCarEA 项目文件",
+            "nameEN": "VCarEA Project File",
+            "type": "file",
+            "fileExtension": ".hlt|.zip",
+            "required": true
+        },
+        {
+            "id": "EA_CASE",
+            "nameCN": "执行 Case（可选）",
+            "nameEN": "Case to Execute (optional)",
+            "type": "file",
+            "fileExtension": ".case",
+            "required": false
+        },
+        {
+            "id": "EA_PLAN",
+            "nameCN": "执行 Plan（可选）",
+            "nameEN": "Plan to Execute (optional)",
+            "type": "file",
+            "fileExtension": ".plan",
+            "required": false
+        },
+        {
+            "id": "EA_TEST_CONFIGURATION",
+            "nameCN": "测试配置 TCF（可选）",
+            "nameEN": "Test Configuration TCF (optional)",
+            "type": "file",
+            "fileExtension": ".tcf",
+            "required": false
+        },
+        {
+            "id": "EA_TESTBENCH_CONFIGURATION",
+            "nameCN": "测试台配置 TBF（可选）",
+            "nameEN": "Testbench Configuration TBF (optional)",
+            "type": "file",
+            "fileExtension": ".tbf",
+            "required": false
+        }
+    ],
+    "OnDeviceProperty": []
+}
