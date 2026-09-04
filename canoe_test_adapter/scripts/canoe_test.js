@@ -1,7 +1,8 @@
-import * as com from "@atech/com";
 import * as fs from "@atech/fs";
 import * as cli from "@atech/cli";
 import * as task from "@atech/task";
+
+import {CanoeSession} from "./canoe_test/session.js";
 
 const CONTRACT_VERSION = "1.0";
 const DEFAULT_TEST_CONFIGURATION = "CICT Test Configuration";
@@ -12,7 +13,6 @@ const CANOE_CONFIGURATION_READY_TIMEOUT_MS = 120000;
 const CANOE_TEST_SETUP_READY_TIMEOUT_MS = 120000;
 const CANOE_MEASUREMENT_START_TIMEOUT_MS = 120000;
 const CANOE_POLL_INTERVAL_MS = 250;
-const CANOE_ACTIVE_OBJECT_GRACE_TIMEOUT_MS = 3000;
 const CANOE_REPORT_GENERATION_TIMEOUT_MS = 120000;
 const CANOE_REPORT_CONVERSION_TIMEOUT_MS = 120000;
 const CANOE_REPORT_FORMAT_VTESTREPORT = 1;
@@ -29,13 +29,9 @@ const SUPPORTED_REPORT_TYPES = [
     REPORT_TYPE_VTESTREPORT
 ];
 
-let application = null;
-let measurement = null;
-let configuration = null;
 let testConfiguration = null;
 let testConfigurationReport = null;
 let testUnits = null;
-let canoeProcess = null;
 let projectDescriptor = null;
 let projectRootUri = "";
 let configurationUri = "";
@@ -56,9 +52,6 @@ let executionFailureMessage = "";
 let reportErrors = [];
 let reportFileBaseline = [];
 let publishedArtifactUris = [];
-let launchedByTask = false;
-let attachExisting = false;
-let measurementRunning = false;
 let testStarted = false;
 let expectedResultCount = 0;
 let useProjectTestSetup = false;
@@ -68,6 +61,12 @@ let selectedTestCases = [];
 function debug(message) {
     task.info(`[CANoe debug] ${message}`);
 }
+
+const canoe = new CanoeSession({
+    intervalMs: CANOE_POLL_INTERVAL_MS,
+    debug
+});
+const wait = canoe.waiter;
 
 function requireSafeRelativePath(value, field) {
     if (typeof value !== "string" || value.length === 0
@@ -124,36 +123,6 @@ function canoeStartMode() {
         return { attachExisting: true, clearExisting: false };
     }
     throw new Error("NEW_CANOE_WHEN_START must be true or false");
-}
-
-async function clearExistingCanoe() {
-    let existingApplication = null;
-    try {
-        existingApplication = com.getActive("CANoe.Application");
-    } catch (_) {
-        return;
-    }
-    try {
-        existingApplication.call("Quit");
-        task.info("Closed existing CANoe instance before starting a new one");
-    } catch (error) {
-        throw new Error(`Unable to close existing CANoe instance: ${error.message}`);
-    } finally {
-        release(existingApplication);
-    }
-    await waitUntil(() => {
-        let activeApplication = null;
-        try {
-            activeApplication = com.getActive("CANoe.Application");
-            return false;
-        } catch (_) {
-            return true;
-        } finally {
-            release(activeApplication);
-        }
-    }, canoeTimeout("AutomationReadyTimeoutMs",
-                    CANOE_AUTOMATION_READY_TIMEOUT_MS),
-    "the existing CANoe Automation server to stop");
 }
 
 function readJson(uri, field) {
@@ -338,131 +307,6 @@ function appendReportObject(report) {
     }
 }
 
-function adoptAutomationHandles(applicationCandidate, measurementCandidate) {
-    release(measurement);
-    release(application);
-    application = applicationCandidate;
-    measurement = measurementCandidate;
-}
-
-function refreshMeasurement() {
-    if (application === null || application === undefined) {
-        throw new Error("CANoe Automation is not connected");
-    }
-    let candidate = null;
-    try {
-        // 打开配置后 CANoe 可能重建 Measurement 对象，不能继续复用旧代理。
-        candidate = application.get("Measurement");
-        candidate.get("Running");
-        release(measurement);
-        measurement = candidate;
-        candidate = null;
-    } finally {
-        release(candidate);
-    }
-}
-
-function isTransientComFailure(error) {
-    const message = errorMessage(error);
-    return /0x800706ba|rpc|server unavailable|服务器不可用|call was rejected|调用被拒绝|server busy|服务器忙/i
-        .test(message);
-}
-
-function tryConnectToActiveAutomationServer() {
-    let candidate = null;
-    let candidateMeasurement = null;
-    try {
-        candidate = com.getActive("CANoe.Application");
-        candidateMeasurement = candidate.get("Measurement");
-        candidateMeasurement.get("Running");
-        adoptAutomationHandles(candidate, candidateMeasurement);
-        candidate = null;
-        candidateMeasurement = null;
-        return true;
-    } catch (_) {
-        release(candidateMeasurement);
-        release(candidate);
-        return false;
-    }
-}
-
-function connectWithComActivation() {
-    let createdApplication = null;
-    let createdMeasurement = null;
-    try {
-        createdApplication = com.create("CANoe.Application");
-        createdMeasurement = createdApplication.get("Measurement");
-        createdMeasurement.get("Running");
-        adoptAutomationHandles(createdApplication, createdMeasurement);
-        createdApplication = null;
-        createdMeasurement = null;
-    } catch (error) {
-        release(createdMeasurement);
-        release(createdApplication);
-        throw new Error(`Unable to connect to CANoe Automation: ${errorMessage(error)}`);
-    }
-}
-
-async function readMeasurementRunning(description) {
-    let running = false;
-    await waitUntil(() => {
-        try {
-            if (measurement === null || measurement === undefined) {
-                refreshMeasurement();
-            }
-            running = measurement.get("Running") === true;
-            return true;
-        } catch (error) {
-            if (!isTransientComFailure(error)) {
-                error.canoeFatal = true;
-                throw error;
-            }
-            // CANoe 在切换配置时会短暂撤销旧的 Automation 代理，重新绑定活动对象。
-            tryConnectToActiveAutomationServer();
-            return false;
-        }
-    }, canoeTimeout("MeasurementReadyTimeoutMs",
-                    CANOE_AUTOMATION_READY_TIMEOUT_MS), description);
-    return running;
-}
-
-async function callMeasurementCommand(command, expectedRunning) {
-    try {
-        measurement.call(command);
-        return;
-    } catch (error) {
-        if (!isTransientComFailure(error)) {
-            throw error;
-        }
-        // COM 调用可能已经在 CANoe 端生效，只是返回路径在代理切换时中断。
-        const running = await readMeasurementRunning(
-            "CANoe Measurement Automation object to recover");
-        if (running === expectedRunning) {
-            return;
-        }
-        measurement.call(command);
-    }
-}
-
-async function waitForMeasurementState(expected, timeoutMs, description) {
-    await waitUntil(() => {
-        try {
-            if (measurement === null || measurement === undefined) {
-                refreshMeasurement();
-            }
-            return measurement.get("Running") === expected;
-        } catch (error) {
-            if (!isTransientComFailure(error)) {
-                error.canoeFatal = true;
-                throw error;
-            }
-            // 轮询期间同样允许 CANoe 重建 Measurement 对象。
-            tryConnectToActiveAutomationServer();
-            return false;
-        }
-    }, timeoutMs, description);
-}
-
 function addReportError(message) {
     const text = String(message === undefined || message === null ? "" : message).trim();
     if (text !== "" && !reportErrors.includes(text)) {
@@ -611,12 +455,14 @@ async function generateNativeReports() {
     let reportUris = discoveredNativeReportUris();
     if (reportUris.length === 0) {
         try {
-            await waitUntil(() => {
-                reportUris = discoveredNativeReportUris();
-                return reportUris.length > 0;
-            }, canoeTimeout("ReportGenerationTimeoutMs",
-                            CANOE_REPORT_GENERATION_TIMEOUT_MS),
-            "CANoe reports to be generated");
+            reportUris = await wait.until(
+                () => discoveredNativeReportUris(),
+                {
+                    timeoutMs: canoeTimeout("ReportGenerationTimeoutMs",
+                                             CANOE_REPORT_GENERATION_TIMEOUT_MS),
+                    description: "CANoe reports to be generated",
+                    isReady: (value) => value.length > 0
+                });
         } catch (error) {
             addReportError(errorMessage(error));
             return [];
@@ -1087,7 +933,7 @@ function removeAll(collection, methodName, secondArgument) {
 }
 
 function configureVtest() {
-    const configurations = configuration.get("TestConfigurations");
+    const configurations = canoe.configuration.get("TestConfigurations");
     const useExistingTestConfiguration = useProjectTestSetup
         && scriptUris.length === 0;
     if (collectionCount(configurations) === 0) {
@@ -1160,7 +1006,7 @@ function configureVtest() {
 }
 
 function configureCommunication() {
-    const setup = configuration.get("TestSetup");
+    const setup = canoe.configuration.get("TestSetup");
     const environments = setup.get("TestEnvironments");
     if (communicationScriptUris.length > 0) {
         removeAll(environments, "Remove", false);
@@ -1234,7 +1080,7 @@ function configureCommunication() {
 }
 
 function configureProjectTests() {
-    const setup = optionalProperty(configuration, "TestSetup");
+    const setup = optionalProperty(canoe.configuration, "TestSetup");
     const environments = setup === undefined || setup === null
         ? null : optionalProperty(setup, "TestEnvironments");
     if (environments !== null && environments !== undefined
@@ -1244,7 +1090,7 @@ function configureProjectTests() {
         return;
     }
 
-    const configurations = optionalProperty(configuration, "TestConfigurations");
+    const configurations = optionalProperty(canoe.configuration, "TestConfigurations");
     if (configurations !== null && configurations !== undefined
             && collectionCount(configurations) > 0) {
         testMode = "vtest";
@@ -1256,7 +1102,9 @@ function configureProjectTests() {
 }
 
 function hasProjectTestSetup() {
-    const setup = optionalProperty(configuration, "TestSetup");
+    // 会话在轮询期间可能刚替换了 Configuration 代理，优先读取会话的最新句柄。
+    const currentConfiguration = canoe.configuration;
+    const setup = optionalProperty(currentConfiguration, "TestSetup");
     const environments = setup === undefined || setup === null
         ? null : optionalProperty(setup, "TestEnvironments");
     if (environments !== null && environments !== undefined
@@ -1272,7 +1120,7 @@ function hasProjectTestSetup() {
             || (items !== undefined && items !== null);
     }
 
-    const configurations = optionalProperty(configuration, "TestConfigurations");
+    const configurations = optionalProperty(currentConfiguration, "TestConfigurations");
     if (configurations === null || configurations === undefined
             || collectionCount(configurations) === 0) {
         return false;
@@ -1282,49 +1130,8 @@ function hasProjectTestSetup() {
         && optionalProperty(testConfiguration, "TestUnits") !== undefined;
 }
 
-async function waitUntil(predicate, timeoutMs, description) {
-    const started = Date.now();
-    let lastError = "";
-    debug(`waiting for ${description}`);
-    while (true) {
-        task.checkCancelled();
-        try {
-            if (predicate()) {
-                debug(`${description} is ready after ${Date.now() - started} ms`);
-                return;
-            }
-        } catch (error) {
-            if (error && error.canoeFatal === true) {
-                throw error;
-            }
-            lastError = errorMessage(error);
-        }
-        if (Date.now() - started >= timeoutMs) {
-            const detail = lastError ? `; last COM error: ${lastError}` : "";
-            throw new Error(`Timed out waiting for ${description} after ${timeoutMs} ms${detail}`);
-        }
-        await task.delay(CANOE_POLL_INTERVAL_MS);
-    }
-}
-
-async function waitForProjectTestSetup() {
-    if (!useProjectTestSetup || projectTestSetupReady) {
-        return;
-    }
-    debug("openConfiguration: waiting for project test setup");
-    await waitUntil(hasProjectTestSetup,
-                    canoeTimeout("TestSetupReadyTimeoutMs",
-                                 CANOE_TEST_SETUP_READY_TIMEOUT_MS),
-                    "CANoe project test setup to finish loading");
-    projectTestSetupReady = true;
-}
-
 function errorMessage(error) {
     return error && error.message ? String(error.message) : String(error);
-}
-
-function isTransientOpenFailure(error) {
-    return /COM invocation failed/i.test(errorMessage(error));
 }
 
 function configureModuleExecution(module) {
@@ -1383,135 +1190,25 @@ function parseReportTypes(value) {
     return selected;
 }
 
-function checkOpenResult(resultOverride) {
-    const openResult = resultOverride === undefined || resultOverride === null
-        ? optionalProperty(configuration, "OpenConfigurationResult")
-            || optionalProperty(application, "OpenConfigurationResult")
-        : resultOverride;
-    if (openResult === undefined || openResult === null) {
-        // OpenConfigurationResult is not exposed by every CANoe release. The
-        // Configuration object itself is the only portable readiness signal.
-        return true;
-    }
-
-    const resultCode = typeof openResult === "number"
-        ? openResult : propertyOr(openResult, ["result", "Result"]);
-    const openError = optionalProperty(openResult, "ErrorMessage");
-    release(openResult);
-    if (resultCode === undefined || resultCode === null) {
-        return true;
-    }
-    if (Number(resultCode) === 0) {
-        return true;
-    }
-    if (Number(resultCode) === 2) {
-        task.warning(`CANoe opened the configuration with a warning${
-            openError ? `: ${openError}` : ""}`);
-        return true;
-    }
-    const detail = openError ? `: ${openError}`
-        : ` with result ${resultCode}`;
-    const error = new Error(`CANoe configuration open failed${detail}`);
-    error.canoeFatal = true;
-    throw error;
-}
-
-async function waitForConfigurationReady() {
-    await waitUntil(() => {
-        try {
-            if (configuration === null) {
-                const opened = application.get("Configuration");
-                if (opened === null || opened === undefined) {
-                    return false;
-                }
-                configuration = opened;
-            }
-            return checkOpenResult();
-        } catch (error) {
-            if (!isTransientComFailure(error)) {
-                error.canoeFatal = true;
-                throw error;
-            }
-            // Open 期间 Application 也可能被 CANoe 重建；下一轮从 ROT 获取新代理。
-            if (tryConnectToActiveAutomationServer()) {
-                release(configuration);
-                configuration = null;
-            }
-            return false;
-        }
-    }, canoeTimeout("ConfigurationReadyTimeoutMs",
-                    CANOE_CONFIGURATION_READY_TIMEOUT_MS),
-    "CANoe configuration to finish loading");
-}
-
-async function stopMeasurementBeforeOpening() {
-    const running = await readMeasurementRunning(
-        "CANoe Measurement Automation object to become available");
-    if (!running) {
-        return;
-    }
-    debug("openConfiguration: stopping existing measurement");
-    await callMeasurementCommand("Stop", false);
-    await waitForMeasurementState(
-        false,
-        canoeTimeout("MeasurementStopTimeoutMs",
-                     CANOE_MEASUREMENT_STOP_TIMEOUT_MS),
-        "CANoe Measurement to stop before opening the configuration");
-}
-
-async function waitForAutomationServer() {
-    await waitUntil(tryConnectToActiveAutomationServer,
-                    canoeTimeout("AutomationReadyTimeoutMs",
-                    CANOE_AUTOMATION_READY_TIMEOUT_MS),
-    "CANoe Automation server to become available");
-}
-
-async function connectToStartedAutomationServer() {
-    const started = Date.now();
-    debug("connect: checking whether the started CANoe instance is active");
-    while (Date.now() - started < CANOE_ACTIVE_OBJECT_GRACE_TIMEOUT_MS) {
-        task.checkCancelled();
-        if (tryConnectToActiveAutomationServer()) {
-            return;
-        }
-        await task.delay(CANOE_POLL_INTERVAL_MS);
-    }
-
-    // 部分 CANoe 版本不会把 -embedding 实例及时注册到 ROT，只能通过 ProgID 激活。
-    debug("connect: calling com.create(CANoe.Application)");
-    connectWithComActivation();
-}
 
 async function openConfiguration() {
-    if (application === null) {
+    if (canoe.application === null) {
         throw new Error("CANoe Automation is not connected");
     }
-    if (configuration !== null) {
-        debug("openConfiguration: configuration is already open");
-        await waitForConfigurationReady();
-        await waitForProjectTestSetup();
-        return;
+    await canoe.openConfiguration(configurationUri, {
+        setupReady: useProjectTestSetup && !projectTestSetupReady
+            ? hasProjectTestSetup : null,
+        setupDescription: "CANoe project test setup to finish loading",
+        configurationTimeoutMs: canoeTimeout("ConfigurationReadyTimeoutMs",
+                                            CANOE_CONFIGURATION_READY_TIMEOUT_MS),
+        setupTimeoutMs: canoeTimeout("TestSetupReadyTimeoutMs",
+                                     CANOE_TEST_SETUP_READY_TIMEOUT_MS),
+        measurementStopTimeoutMs: canoeTimeout("MeasurementStopTimeoutMs",
+                                                CANOE_MEASUREMENT_STOP_TIMEOUT_MS)
+    });
+    if (useProjectTestSetup) {
+        projectTestSetupReady = true;
     }
-    // The task workspace is disposable, so CANoe may persist an upgraded
-    // configuration there. Keep prompts disabled for unattended execution.
-    await stopMeasurementBeforeOpening();
-    // Application.Open 会替换 Measurement 子对象，主动释放旧代理，避免后续访问失效句柄。
-    release(measurement);
-    measurement = null;
-    try {
-        debug(`openConfiguration: calling Application.Open (${configurationUri})`);
-        const openResult = application.call(
-            "Open", fs.nativePath(configurationUri), true, false);
-        checkOpenResult(openResult);
-    } catch (error) {
-        if (isTransientOpenFailure(error)) {
-            throw new Error("CANoe Application became unavailable after "
-                + `initialization: ${errorMessage(error)}`);
-        }
-        throw error;
-    }
-    await waitForConfigurationReady();
-    await waitForProjectTestSetup();
     debug("openConfiguration: completed");
 }
 
@@ -1541,8 +1238,6 @@ export async function prepare(projectPackage) {
     selectedTestCases = [];
     useProjectTestSetup = false;
     projectTestSetupReady = false;
-    attachExisting = false;
-
     debug("prepare: extracting project package");
     fs.extractZip(projectPackage, projectRootUri);
     const project = loadProject(projectRootUri);
@@ -1590,56 +1285,51 @@ export async function prepare(projectPackage) {
 export async function launch() {
     debug("launch: starting");
     const startMode = canoeStartMode();
-    attachExisting = startMode.attachExisting;
-    if (attachExisting) {
-        launchedByTask = false;
+    if (startMode.attachExisting) {
         debug("launch: using an existing CANoe process");
         task.info("Attaching to an existing CANoe process");
+        await canoe.launch({
+            attachExisting: true,
+            clearExisting: false
+        });
         return;
     }
-    if (startMode.clearExisting) {
-        await clearExistingCanoe();
-    }
-    const executable = task.device("CANOE_SOFTWARE_POSITION");
-    debug(`launch: starting executable: ${executable}`);
+    debug("launch: creating CANoe Automation instance through COM");
     debug(`launch: project configuration will be opened during configure: ${configurationUri}`);
-    canoeProcess = cli.start({
-        executable,
-        // CANoe's COM mode suppresses the disclaimer and other modal dialogs.
-        arguments: ["-embedding"]
+    await canoe.launch({
+        attachExisting: false,
+        clearExisting: startMode.clearExisting,
+        clearTimeoutMs: canoeTimeout("AutomationReadyTimeoutMs",
+                                    CANOE_AUTOMATION_READY_TIMEOUT_MS)
     });
-    launchedByTask = true;
-    debug(`launch: process started (pid=${canoeProcess.pid})`);
+    debug("launch: CANoe Automation instance created");
 }
 
 export async function connect() {
     debug("connect: starting");
-    if (attachExisting) {
-        debug("connect: waiting for the existing CANoe Automation server");
-        await waitForAutomationServer();
-    } else {
-        await connectToStartedAutomationServer();
-    }
+    debug(canoe.attached
+        ? "connect: waiting for the existing CANoe Automation server"
+        : "connect: using the CANoe Automation instance created during launch");
+    await canoe.connect({
+        attached: canoe.attached,
+        timeoutMs: canoeTimeout("AutomationReadyTimeoutMs",
+                                CANOE_AUTOMATION_READY_TIMEOUT_MS)
+    });
     debug("connect: completed");
 }
 
 export async function startMeasurement() {
     debug("startMeasurement: starting");
     await openConfiguration();
-    let running = await readMeasurementRunning(
-        "CANoe Measurement Automation object to become available");
-    if (!running) {
-        debug("startMeasurement: calling Measurement.Start");
-        await callMeasurementCommand("Start", true);
-    } else {
+    const running = await canoe.ensureMeasurementStarted({
+        readyTimeoutMs: canoeTimeout("AutomationReadyTimeoutMs",
+                                     CANOE_AUTOMATION_READY_TIMEOUT_MS),
+        startTimeoutMs: canoeTimeout("MeasurementStartTimeoutMs",
+                                     CANOE_MEASUREMENT_START_TIMEOUT_MS)
+    });
+    if (running) {
         debug("startMeasurement: measurement is already running");
     }
-    await waitForMeasurementState(
-        true,
-        canoeTimeout("MeasurementStartTimeoutMs",
-                     CANOE_MEASUREMENT_START_TIMEOUT_MS),
-        "CANoe Measurement to start");
-    measurementRunning = true;
     debug("startMeasurement: completed");
     task.progress(10);
 }
@@ -1677,16 +1367,17 @@ export async function execute() {
             configureModuleExecution(module);
             module.call("Start");
             testStarted = true;
-            while (objectRunning(module, true)
-                    || completedCaseCount([module]) < expectedModuleResultCount) {
-                task.checkCancelled();
+            await wait.until(() => {
+                const pending = objectRunning(module, true)
+                    || completedCaseCount([module]) < expectedModuleResultCount;
                 publishCompletedResults(collectVerdictsFrom([module]));
                 task.progress(Math.min(90, 20 + results.length * 5));
-                if (Date.now() - started >= timeout) {
-                    throw new Error("Timed out waiting for CANoe communication test module");
-                }
-                await task.delay(CANOE_POLL_INTERVAL_MS);
-            }
+                return !pending;
+            }, {
+                timeoutMs: Math.max(0, timeout - (Date.now() - started)),
+                description: "CANoe communication test module to finish",
+                isReady: (value) => value === true
+            });
             publishCompletedResults(collectVerdictsFrom([module]));
         }
     } else {
@@ -1696,20 +1387,18 @@ export async function execute() {
         debug("execute: calling TestConfiguration.Start");
         testConfiguration.call("Start");
         testStarted = true;
-        while (moduleRunning() || results.length < expectedResultCount) {
-            task.checkCancelled();
+        await wait.until(() => {
+            const pending = moduleRunning() || results.length < expectedResultCount;
             publishCompletedResults(collectVerdicts());
             const progress = results.length === 0
                 ? 20 : Math.min(90, 20 + results.length * 5);
             task.progress(progress);
-            if (!moduleRunning() && results.length >= expectedResultCount) {
-                break;
-            }
-            if (Date.now() - started >= timeout) {
-                throw new Error("Timed out waiting for CANoe TestConfiguration");
-            }
-            await task.delay(CANOE_POLL_INTERVAL_MS);
-        }
+            return !pending;
+        }, {
+            timeoutMs: Math.max(0, timeout - (Date.now() - started)),
+            description: "CANoe TestConfiguration to finish",
+            isReady: (value) => value === true
+        });
     }
     publishCompletedResults(collectVerdicts());
     writeResultsReport(false);
@@ -1832,83 +1521,67 @@ export async function collectArtifacts() {
 }
 
 export async function cleanup() {
-    debug(`cleanup: starting (measurementRunning=${measurementRunning}, testStarted=${testStarted}, launchedByTask=${launchedByTask})`);
+    debug(`cleanup: starting (measurementRunning=${canoe.measurementRunning}, testStarted=${testStarted}, launchedByTask=${canoe.ownsProcess})`);
     try {
-        if (testConfiguration !== null && testStarted) {
-            debug("cleanup: calling TestConfiguration.Stop");
-            testConfiguration.call("Stop");
-        }
-        for (const module of activeCommunicationModules) {
-            if (testStarted) {
-                debug("cleanup: stopping communication test module");
-                module.call("Stop");
+        if (testStarted) {
+            if (testConfiguration !== null) {
+                try {
+                    debug("cleanup: calling TestConfiguration.Stop");
+                    testConfiguration.call("Stop");
+                } catch (error) {
+                    task.warning(`Unable to stop CANoe TestConfiguration: ${errorMessage(error)}`);
+                }
+            }
+            for (const module of activeCommunicationModules) {
+                try {
+                    debug("cleanup: stopping communication test module");
+                    module.call("Stop");
+                } catch (error) {
+                    task.warning(`Unable to stop CANoe communication module: ${errorMessage(error)}`);
+                }
             }
         }
     } catch (error) {
-        task.warning(`Unable to stop CANoe TestConfiguration: ${error.message}`);
+        task.warning(`Unable to stop CANoe test execution: ${errorMessage(error)}`);
     }
     try {
-        if (measurement !== null && measurementRunning && measurement.get("Running") === true) {
-            debug("cleanup: calling Measurement.Stop");
-            measurement.call("Stop");
+        await canoe.close({
+            quit: canoe.ownsProcess || Boolean(task.option("QuitAttachedInstance", false))
+        });
+    } finally {
+        for (const report of reportObjects) {
+            release(report);
         }
-    } catch (error) {
-        task.warning(`Unable to stop CANoe Measurement: ${error.message}`);
+        release(testUnits);
+        release(testConfiguration);
+        testConfiguration = null;
+        testConfigurationReport = null;
+        testUnits = null;
+        communicationModules = [];
+        activeCommunicationModules = [];
+        communicationScriptUris = [];
+        communicationModuleNames = [];
+        scriptUris = [];
+        requestedIds = [];
+        results = [];
+        reportObjects = [];
+        reportTypes = [];
+        nativeReportOutputs = [];
+        generatedReports = [];
+        executionFailureMessage = "";
+        reportErrors = [];
+        reportFileBaseline = [];
+        publishedArtifactUris = [];
+        testMode = "";
+        projectDescriptor = null;
+        projectRootUri = "";
+        configurationUri = "";
+        reportUri = "";
+        expectedResultCount = 0;
+        selectedTestCases = [];
+        testStarted = false;
+        useProjectTestSetup = false;
+        projectTestSetupReady = false;
+        debug("cleanup: completed");
     }
-    try {
-        if (application !== null
-                && (launchedByTask || Boolean(task.option("QuitAttachedInstance", false)))) {
-            debug("cleanup: calling Application.Quit");
-            application.call("Quit");
-        }
-    } catch (error) {
-        task.warning(`Unable to quit CANoe: ${error.message}`);
-    }
-    if (canoeProcess !== null) {
-        try {
-            if (cli.isRunning(canoeProcess)) {
-                debug(`cleanup: terminating process (pid=${canoeProcess.pid})`);
-                cli.terminate(canoeProcess, 3000);
-            }
-        } catch (error) {
-            task.warning(`Unable to terminate CANoe process: ${error.message}`);
-        }
-        try {
-            cli.release(canoeProcess);
-        } catch (_) {
-            // The host reclaims process handles when the worker exits.
-        }
-    }
-    for (const report of reportObjects) {
-        release(report);
-    }
-    release(testUnits);
-    release(testConfiguration);
-    release(configuration);
-    release(measurement);
-    release(application);
-    application = null;
-    measurement = null;
-    configuration = null;
-    testConfiguration = null;
-    testConfigurationReport = null;
-    testUnits = null;
-    communicationModules = [];
-    activeCommunicationModules = [];
-    reportObjects = [];
-    reportTypes = [];
-    nativeReportOutputs = [];
-    generatedReports = [];
-    executionFailureMessage = "";
-    reportErrors = [];
-    reportFileBaseline = [];
-    publishedArtifactUris = [];
-    canoeProcess = null;
-    measurementRunning = false;
-    testStarted = false;
-    launchedByTask = false;
-    attachExisting = false;
-    useProjectTestSetup = false;
-    projectTestSetupReady = false;
-    debug("cleanup: completed");
 }
