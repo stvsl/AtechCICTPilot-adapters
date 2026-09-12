@@ -1,7 +1,11 @@
 import * as fs from "@atech/fs";
 import * as task from "@atech/task";
 
-import {CanoeSession, errorMessage} from "./canoe_flash/session.js";
+import {
+    CanoeSession,
+    errorMessage,
+    isAutomationDisconnectFailure
+} from "./canoe_flash/session.js";
 
 /*
  * CANoe Automation 模型保留在适配器中；宿主只提供通用 COM 桥，
@@ -172,7 +176,8 @@ function collectionCount(collection) {
     try {
         const count = Number(collection.get("Count"));
         return Number.isFinite(count) && count >= 0 ? Math.floor(count) : 0;
-    } catch (_) {
+    } catch (error) {
+        throwIfAutomationDisconnected(error);
         return 0;
     }
 }
@@ -180,7 +185,8 @@ function collectionCount(collection) {
 function collectionItem(collection, index) {
     try {
         return collection.item(index + 1);
-    } catch (_) {
+    } catch (error) {
+        throwIfAutomationDisconnected(error);
         return collection.item(index);
     }
 }
@@ -191,7 +197,8 @@ function collectionItems(collection) {
     for (let index = 0; index < count; ++index) {
         try {
             result.push(collectionItem(collection, index));
-        } catch (_) {
+        } catch (error) {
+            throwIfAutomationDisconnected(error);
             break;
         }
     }
@@ -205,8 +212,9 @@ function findNamed(collection, expectedName) {
             if (normalizeName(item.get("Name")) === wanted) {
                 return item;
             }
-        } catch (_) {
-            // The missing-module error below contains the actionable name.
+        } catch (error) {
+            throwIfAutomationDisconnected(error);
+            // 后续缺少模块的错误会包含可操作的模块名称。
         }
     }
     return null;
@@ -215,7 +223,8 @@ function findNamed(collection, expectedName) {
 function optionalProperty(object, name) {
     try {
         return object.get(name);
-    } catch (_) {
+    } catch (error) {
+        throwIfAutomationDisconnected(error);
         return undefined;
     }
 }
@@ -338,8 +347,21 @@ function release(object) {
     try {
         object.release();
     } catch (_) {
-        // The host also releases all remaining handles after the stage.
+        // 阶段结束后，宿主也会回收所有剩余句柄。
     }
+}
+
+function throwIfAutomationDisconnected(error) {
+    if (!isAutomationDisconnectFailure(error)) {
+        return;
+    }
+    if (error && typeof error === "object") {
+        error.canoeFatal = true;
+        throw error;
+    }
+    const disconnected = new Error(`CANoe Automation disconnected: ${error}`);
+    disconnected.canoeFatal = true;
+    throw disconnected;
 }
 
 function hasFlashTestSetup() {

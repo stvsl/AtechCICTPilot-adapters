@@ -9,6 +9,7 @@ const CANOE_PROG_ID = "CANoe.Application";
 const DEFAULT_TIMEOUT_MS = 120000;
 const CANOE_CLASS_FACTORY_GRACE_MS = 5000;
 const CANOE_NOT_READY_CODE = "CANOE_NOT_READY";
+const CANOE_INSTANCE_MISMATCH_CODE = "CANOE_INSTANCE_MISMATCH";
 
 function release(object) {
     if (object === null || object === undefined) {
@@ -27,7 +28,11 @@ function optionalProperty(object, name) {
     }
     try {
         return object.get(name);
-    } catch (_) {
+    } catch (error) {
+        if (isAutomationDisconnectFailure(error)) {
+            error.canoeFatal = true;
+            throw error;
+        }
         return undefined;
     }
 }
@@ -60,21 +65,76 @@ function processOutput(result) {
         .join("; ");
 }
 
+function hresult(error) {
+    const detail = error && error.details && error.details.hresult;
+    if (detail !== undefined && detail !== null && String(detail).trim() !== "") {
+        return String(detail).trim().toLowerCase();
+    }
+    const match = errorMessage(error).match(/0x[0-9a-f]{8}/i);
+    return match ? match[0].toLowerCase() : "";
+}
+
+function isAutomationDisconnectFailure(error) {
+    const code = hresult(error);
+    return code === "0x800706ba" || code === "0x800706be"
+        || code === "0x80010108"
+        || /rpc server is unavailable|rpc 服务器不可用|远程过程调用失败|object invoked has disconnected|对象已与其客户端断开连接/i
+            .test(errorMessage(error));
+}
+
 function isTransientComFailure(error) {
     const message = errorMessage(error);
-    return (error && error.code === CANOE_NOT_READY_CODE)
-        || /0x80010001|0x8001010a|0x8001010d|0x800706ba|rpc|server unavailable|服务器不可用|call was rejected|调用被拒绝|server busy|服务器忙/i
-            .test(message);
+    return !isAutomationDisconnectFailure(error)
+        && ((error && error.code === CANOE_NOT_READY_CODE)
+            || /0x80010001|0x8001010a|0x8001010d|call was rejected|调用被拒绝|server busy|服务器忙/i
+                .test(message));
 }
 
 function isTransientActivationFailure(error) {
-    return isTransientComFailure(error)
+    return isTransientComFailure(error) || isAutomationDisconnectFailure(error)
         || /0x80080005|server execution failed|服务器运行失败/i
             .test(errorMessage(error));
 }
 
 function isTransientOpenFailure(error) {
     return /COM invocation failed/i.test(errorMessage(error));
+}
+
+function normalizeNativePath(value) {
+    let path = String(value === undefined || value === null ? "" : value).trim();
+    if (path.length >= 2
+            && ((path.startsWith('"') && path.endsWith('"'))
+                || (path.startsWith("'") && path.endsWith("'")))) {
+        path = path.substring(1, path.length - 1).trim();
+    }
+    path = path.replace(/\\/g, "/");
+    if (path.toLowerCase().startsWith("//?/")) {
+        path = path.substring(4);
+    }
+    return path.replace(/\/+$/, "").toLowerCase();
+}
+
+function parentNativePath(path) {
+    const normalized = normalizeNativePath(path);
+    const separator = normalized.lastIndexOf("/");
+    return separator < 0 ? "" : normalized.substring(0, separator);
+}
+
+function versionText(version) {
+    if (version === null || version === undefined) {
+        return "";
+    }
+    if (typeof version !== "object") {
+        return String(version).trim();
+    }
+    const parts = [];
+    for (const name of ["Major", "Minor", "Build", "Patch"]) {
+        const value = optionalProperty(version, name);
+        if (value !== undefined && value !== null && String(value).trim() !== "") {
+            parts.push(String(value).trim());
+        }
+    }
+    return parts.join(".");
 }
 
 export class CanoeSession {
@@ -196,6 +256,54 @@ export class CanoeSession {
         }
     }
 
+    validateStartedApplication(application) {
+        if (this.executable === "") {
+            return {fullName: "", path: "", version: ""};
+        }
+
+        let version = null;
+        let fullName;
+        let applicationPath;
+        let applicationVersion;
+        try {
+            fullName = application.get("FullName");
+            applicationPath = application.get("Path");
+            version = application.get("Version");
+            applicationVersion = versionText(version);
+        } catch (error) {
+            throw contextualError(
+                "Unable to identify the started CANoe Automation instance", error);
+        } finally {
+            release(version);
+        }
+
+        const expected = normalizeNativePath(this.executable);
+        const actualFullName = normalizeNativePath(fullName);
+        const actualPath = normalizeNativePath(applicationPath);
+        const matches = actualFullName !== ""
+            ? actualFullName === expected
+            : actualPath === expected || actualPath === parentNativePath(expected);
+        const actual = String(fullName || applicationPath || "").trim();
+        if (!matches) {
+            const versionDetail = applicationVersion
+                ? `, version=${applicationVersion}` : "";
+            const error = new Error(
+                `CANoe Automation instance mismatch: configured executable="${this.executable}", `
+                + `connected executable="${actual || "unknown"}"${versionDetail}`);
+            error.code = CANOE_INSTANCE_MISMATCH_CODE;
+            error.canoeFatal = true;
+            throw error;
+        }
+
+        this.debug(`connect: verified CANoe Automation executable=${actual}`
+            + (applicationVersion ? `, version=${applicationVersion}` : ""));
+        return {
+            fullName: String(fullName || ""),
+            path: String(applicationPath || ""),
+            version: applicationVersion
+        };
+    }
+
     tryAdoptStartedApplication() {
         let candidate = null;
         try {
@@ -205,9 +313,12 @@ export class CanoeSession {
             this.adopt(candidate, null);
             candidate = null;
             return true;
-        } catch (_) {
+        } catch (error) {
             release(candidate);
             this.ensureLaunchedProcessRunning();
+            if (error && error.code === CANOE_INSTANCE_MISMATCH_CODE) {
+                this.debug(`connect: rejected active CANoe instance: ${errorMessage(error)}`);
+            }
             return false;
         }
     }
@@ -318,6 +429,9 @@ export class CanoeSession {
     }
 
     adopt(application, measurement) {
+        if (this.executable !== "") {
+            this.validateStartedApplication(application);
+        }
         if (this.measurement !== measurement) {
             release(this.measurement);
         }
@@ -527,8 +641,11 @@ export class CanoeSession {
                 this.checkOpenResult(result);
             } catch (error) {
                 if (isTransientOpenFailure(error)) {
-                    throw new Error("CANoe Application became unavailable after "
-                        + `initialization: ${errorMessage(error)}`);
+                    const disconnected = contextualError(
+                        "CANoe Application became unavailable after initialization",
+                        error);
+                    disconnected.canoeFatal = true;
+                    throw disconnected;
                 }
                 throw error;
             }
@@ -620,4 +737,10 @@ export class CanoeSession {
     }
 }
 
-export {errorMessage, isTransientComFailure, optionalProperty, release};
+export {
+    errorMessage,
+    isAutomationDisconnectFailure,
+    isTransientComFailure,
+    optionalProperty,
+    release
+};
