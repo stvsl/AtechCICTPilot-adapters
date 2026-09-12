@@ -443,12 +443,14 @@ export async function launch() {
         });
         return;
     }
+    const executable = task.device("CANOE_SOFTWARE_POSITION");
     await canoe.launch({
         attachExisting: false,
         clearExisting: startMode.clearExisting,
+        executable,
         clearTimeoutMs: CANOE_AUTOMATION_READY_TIMEOUT_MS,
     });
-    task.info("CANoe Automation instance created through COM");
+    task.info(`CANoe process started from configured executable (pid=${canoe.process.pid})`);
 }
 
 export async function connect() {

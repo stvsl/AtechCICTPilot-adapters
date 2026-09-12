@@ -25,6 +25,9 @@
         "CLI": {
             "Executables": [
                 {
+                    "DeviceProperty": "CANOE_SOFTWARE_POSITION"
+                },
+                {
                     "DeviceProperty": "CANOE_REPORT_VIEWER_CLI"
                 }
             ],
@@ -84,6 +87,14 @@
         }
     ],
     "OnDeviceProperty": [
+        {
+            "id": "CANOE_SOFTWARE_POSITION",
+            "nameCN": "CANoe 可执行文件",
+            "nameEN": "CANoe Executable",
+            "type": "string_url_file",
+            "fileExtension": ".exe",
+            "required": true
+        },
         {
             "id": "CANOE_PROJECT_DIR",
             "nameCN": "任务工作区根目录",

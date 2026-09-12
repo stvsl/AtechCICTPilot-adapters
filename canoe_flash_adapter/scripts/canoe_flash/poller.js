@@ -2,7 +2,11 @@ import * as task from "@atech/task";
 
 // 将宿主异常统一转换为可读文本，避免轮询层依赖 COM 实现细节。
 export function errorMessage(error) {
-    return error && error.message ? String(error.message) : String(error);
+    const message = error && error.message ? String(error.message) : String(error);
+    const hresult = error && error.details && error.details.hresult
+        ? String(error.details.hresult) : "";
+    return hresult !== "" && !message.toLowerCase().includes(hresult.toLowerCase())
+        ? `${message} (${hresult})` : message;
 }
 
 // 轮询超时使用独立错误码，调用方可以在需要降级时精确区分超时和业务错误。

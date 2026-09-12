@@ -1,4 +1,5 @@
 import * as com from "@atech/com";
+import * as cli from "@atech/cli";
 import * as fs from "@atech/fs";
 import * as task from "@atech/task";
 
@@ -6,6 +7,7 @@ import {Poller, errorMessage} from "./poller.js";
 
 const CANOE_PROG_ID = "CANoe.Application";
 const DEFAULT_TIMEOUT_MS = 120000;
+const CANOE_CLASS_FACTORY_GRACE_MS = 5000;
 const CANOE_NOT_READY_CODE = "CANOE_NOT_READY";
 
 function release(object) {
@@ -40,11 +42,35 @@ function propertyOr(object, names, fallback = undefined) {
     return fallback;
 }
 
+function contextualError(context, error) {
+    const wrapped = new Error(`${context}: ${errorMessage(error)}`);
+    if (error && typeof error.code === "string") {
+        wrapped.code = error.code;
+    }
+    if (error && error.details && typeof error.details === "object") {
+        wrapped.details = error.details;
+    }
+    return wrapped;
+}
+
+function processOutput(result) {
+    return [result && result.standardError, result && result.standardOutput]
+        .map((value) => String(value === undefined || value === null ? "" : value).trim())
+        .filter((value) => value !== "")
+        .join("; ");
+}
+
 function isTransientComFailure(error) {
     const message = errorMessage(error);
     return (error && error.code === CANOE_NOT_READY_CODE)
         || /0x80010001|0x8001010a|0x8001010d|0x800706ba|rpc|server unavailable|服务器不可用|call was rejected|调用被拒绝|server busy|服务器忙/i
             .test(message);
+}
+
+function isTransientActivationFailure(error) {
+    return isTransientComFailure(error)
+        || /0x80080005|server execution failed|服务器运行失败/i
+            .test(errorMessage(error));
 }
 
 function isTransientOpenFailure(error) {
@@ -62,6 +88,8 @@ export class CanoeSession {
         this.ownsProcess = false;
         this.attached = false;
         this.measurementRunning = false;
+        this.executable = "";
+        this.launchedAt = 0;
     }
 
     async clearExisting(timeoutMs = DEFAULT_TIMEOUT_MS) {
@@ -75,7 +103,7 @@ export class CanoeSession {
             existingApplication.call("Quit");
             task.info("Closed existing CANoe instance before starting a new one");
         } catch (error) {
-            throw new Error(`Unable to close existing CANoe instance: ${errorMessage(error)}`);
+            throw contextualError("Unable to close existing CANoe instance", error);
         } finally {
             release(existingApplication);
         }
@@ -96,38 +124,137 @@ export class CanoeSession {
         });
     }
 
-    async launch({attachExisting = false, clearExisting = false,
+    async launch({attachExisting = false, clearExisting = false, executable = "",
         clearTimeoutMs = DEFAULT_TIMEOUT_MS} = {}) {
         this.attached = Boolean(attachExisting);
         if (this.attached) {
             this.ownsProcess = false;
             return;
         }
-        if (this.application !== null && this.application !== undefined) {
+        if ((this.application !== null && this.application !== undefined)
+                || this.process !== null) {
             return;
+        }
+        const executablePath = executable === undefined || executable === null
+            ? "" : String(executable).trim();
+        if (executablePath === "") {
+            throw new Error("CANoe executable is required when starting a new instance");
         }
         if (clearExisting) {
             await this.clearExisting(clearTimeoutMs);
         }
 
-        // COM 激活直接返回任务拥有的 Automation 对象，避免 CLI 进程与
-        // COM 激活之间的竞态导致第二个 CANoe 实例。
-        let createdApplication = null;
         try {
-            this.debug("launch: creating CANoe Automation instance");
-            createdApplication = com.create(CANOE_PROG_ID);
-            this.adopt(createdApplication, null);
-            createdApplication = null;
+            this.debug(`launch: starting configured CANoe executable: ${executablePath}`);
+            this.process = cli.start({
+                executable: executablePath,
+                arguments: ["-embedding"]
+            });
+            this.executable = executablePath;
+            this.launchedAt = Date.now();
             this.ownsProcess = true;
         } catch (error) {
-            release(createdApplication);
-            throw new Error(`Unable to launch CANoe Automation: ${errorMessage(error)}`);
+            throw contextualError("Unable to start configured CANoe executable", error);
         }
+    }
+
+    processExitError() {
+        let result;
+        try {
+            result = cli.wait(this.process, 0);
+        } catch (error) {
+            const wrapped = contextualError(
+                "Unable to inspect the configured CANoe process after it stopped", error);
+            wrapped.canoeFatal = true;
+            return wrapped;
+        }
+        const state = result.crashed ? "crashed" : "exited";
+        const output = processOutput(result);
+        const suffix = output === "" ? "" : `: ${output}`;
+        const error = new Error(
+            `Configured CANoe process ${state} unexpectedly with code ${result.exitCode} `
+            + `(pid=${this.process.pid}, executable=${this.executable})${suffix}`);
+        error.canoeFatal = true;
+        return error;
+    }
+
+    ensureLaunchedProcessRunning() {
+        if (this.process === null) {
+            const error = new Error(
+                "CANoe process was not started during the launch stage");
+            error.canoeFatal = true;
+            throw error;
+        }
+        if (!cli.isRunning(this.process)) {
+            throw this.processExitError();
+        }
+    }
+
+    ensureOwnedProcessRunning() {
+        if (!this.attached && this.ownsProcess) {
+            this.ensureLaunchedProcessRunning();
+        }
+    }
+
+    tryAdoptStartedApplication() {
+        let candidate = null;
+        try {
+            this.ensureLaunchedProcessRunning();
+            candidate = com.getActive(CANOE_PROG_ID);
+            this.ensureLaunchedProcessRunning();
+            this.adopt(candidate, null);
+            candidate = null;
+            return true;
+        } catch (_) {
+            release(candidate);
+            this.ensureLaunchedProcessRunning();
+            return false;
+        }
+    }
+
+    async waitForClassFactory(timeoutMs) {
+        // 优先从 ROT 取得显式启动的实例；部分 CANoe 版本不会及时注册，
+        // 此时等待类工厂稳定后再回退到 ProgID 激活。
+        await this.waiter.until(() => {
+            this.ensureLaunchedProcessRunning();
+            if (this.tryAdoptStartedApplication()) {
+                return true;
+            }
+            return Date.now() - this.launchedAt >= CANOE_CLASS_FACTORY_GRACE_MS;
+        }, {
+            timeoutMs,
+            description: "configured CANoe process to initialize its Automation server",
+            isReady: (ready) => ready === true
+        });
+    }
+
+    async activateStartedApplication(timeoutMs) {
+        await this.waiter.until(() => {
+            this.ensureLaunchedProcessRunning();
+            let candidate = null;
+            try {
+                candidate = com.create(CANOE_PROG_ID);
+                this.ensureLaunchedProcessRunning();
+                this.adopt(candidate, null);
+                candidate = null;
+                return true;
+            } catch (error) {
+                release(candidate);
+                this.ensureLaunchedProcessRunning();
+                throw error;
+            }
+        }, {
+            timeoutMs,
+            description: "configured CANoe Automation server to accept COM activation",
+            isReady: (value) => value === true,
+            retryOnError: (error) => isTransientActivationFailure(error)
+        });
     }
 
     async waitForMeasurement(timeoutMs = DEFAULT_TIMEOUT_MS) {
         await this.waiter.until(() => {
             try {
+                this.ensureOwnedProcessRunning();
                 this.refreshMeasurement();
                 return true;
             } catch (error) {
@@ -152,15 +279,21 @@ export class CanoeSession {
             }
             return;
         }
-        if (!this.attached) {
-            throw new Error(
-                "CANoe Automation was not created during the launch stage");
+        if (this.attached) {
+            await this.waiter.until(() => this.tryConnect(), {
+                timeoutMs,
+                description: "CANoe Automation server to become available",
+                isReady: (value) => value === true
+            });
+            return;
         }
-        await this.waiter.until(() => this.tryConnect(), {
-            timeoutMs,
-            description: "CANoe Automation server to become available",
-            isReady: (value) => value === true
-        });
+        const started = Date.now();
+        const remaining = () => Math.max(0, timeoutMs - (Date.now() - started));
+        await this.waitForClassFactory(remaining());
+        if (this.application === null || this.application === undefined) {
+            await this.activateStartedApplication(remaining());
+        }
+        await this.waitForMeasurement(remaining());
     }
 
     tryConnect() {
@@ -222,6 +355,7 @@ export class CanoeSession {
         if (!isTransientComFailure(error)) {
             return false;
         }
+        this.ensureOwnedProcessRunning();
         if (this.attached) {
             this.tryConnect();
         } else {
@@ -238,6 +372,7 @@ export class CanoeSession {
         if (!isTransientComFailure(error)) {
             return false;
         }
+        this.ensureOwnedProcessRunning();
         if (this.attached && this.tryConnect()) {
             release(this.configuration);
             this.configuration = null;
@@ -251,6 +386,7 @@ export class CanoeSession {
     async readMeasurementRunning(timeoutMs = DEFAULT_TIMEOUT_MS,
         description = "CANoe Measurement Automation object to become available") {
         return this.waiter.until(() => {
+            this.ensureOwnedProcessRunning();
             if (this.measurement === null || this.measurement === undefined) {
                 this.refreshMeasurement();
             }
@@ -265,6 +401,7 @@ export class CanoeSession {
 
     async callMeasurementCommand(command, expectedRunning,
         timeoutMs = DEFAULT_TIMEOUT_MS) {
+        this.ensureOwnedProcessRunning();
         if (this.measurement === null || this.measurement === undefined) {
             this.refreshMeasurement();
         }
@@ -281,12 +418,14 @@ export class CanoeSession {
             if (running === expectedRunning) {
                 return;
             }
+            this.ensureOwnedProcessRunning();
             this.measurement.call(command);
         }
     }
 
     async waitForMeasurementState(expected, timeoutMs, description) {
         await this.waiter.until(() => {
+            this.ensureOwnedProcessRunning();
             if (this.measurement === null || this.measurement === undefined) {
                 this.refreshMeasurement();
             }
@@ -349,6 +488,7 @@ export class CanoeSession {
 
     async waitForConfiguration(timeoutMs = DEFAULT_TIMEOUT_MS) {
         await this.waiter.until(() => {
+            this.ensureOwnedProcessRunning();
             if (this.configuration === null || this.configuration === undefined) {
                 const opened = this.application.get("Configuration");
                 if (opened === null || opened === undefined) {
@@ -375,6 +515,7 @@ export class CanoeSession {
         if (this.application === null || this.application === undefined) {
             throw new Error("CANoe Automation is not connected");
         }
+        this.ensureOwnedProcessRunning();
         if (this.configuration === null || this.configuration === undefined) {
             await this.stopMeasurementBeforeOpening(measurementStopTimeoutMs);
             release(this.measurement);
@@ -394,7 +535,10 @@ export class CanoeSession {
         }
         await this.waitForConfiguration(configurationTimeoutMs);
         if (typeof setupReady === "function") {
-            await this.waiter.until(setupReady, {
+            await this.waiter.until(() => {
+                this.ensureOwnedProcessRunning();
+                return setupReady();
+            }, {
                 timeoutMs: setupTimeoutMs,
                 description: setupDescription,
                 isReady: (value) => value === true,
@@ -442,11 +586,27 @@ export class CanoeSession {
             this.ownsProcess = false;
             this.attached = false;
             this.measurementRunning = false;
+            this.executable = "";
+            this.launchedAt = 0;
         }
     }
 
     releaseProcess() {
-        // COM 激活没有独立的 CLI 进程句柄，实例由 Application.Quit 管理。
+        if (this.process === null) {
+            return;
+        }
+        try {
+            if (cli.isRunning(this.process)) {
+                cli.terminate(this.process, 3000);
+            }
+        } catch (error) {
+            task.warning(`Unable to terminate CANoe process: ${errorMessage(error)}`);
+        }
+        try {
+            cli.release(this.process);
+        } catch (error) {
+            task.warning(`Unable to release CANoe process: ${errorMessage(error)}`);
+        }
         this.process = null;
     }
 

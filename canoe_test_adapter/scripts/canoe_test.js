@@ -1294,22 +1294,24 @@ export async function launch() {
         });
         return;
     }
-    debug("launch: creating CANoe Automation instance through COM");
+    const executable = task.device("CANOE_SOFTWARE_POSITION");
+    debug(`launch: starting configured CANoe executable: ${executable}`);
     debug(`launch: project configuration will be opened during configure: ${configurationUri}`);
     await canoe.launch({
         attachExisting: false,
         clearExisting: startMode.clearExisting,
+        executable,
         clearTimeoutMs: canoeTimeout("AutomationReadyTimeoutMs",
                                     CANOE_AUTOMATION_READY_TIMEOUT_MS)
     });
-    debug("launch: CANoe Automation instance created");
+    debug(`launch: CANoe process started (pid=${canoe.process.pid})`);
 }
 
 export async function connect() {
     debug("connect: starting");
     debug(canoe.attached
         ? "connect: waiting for the existing CANoe Automation server"
-        : "connect: using the CANoe Automation instance created during launch");
+        : "connect: activating the configured CANoe Automation server");
     await canoe.connect({
         attached: canoe.attached,
         timeoutMs: canoeTimeout("AutomationReadyTimeoutMs",
