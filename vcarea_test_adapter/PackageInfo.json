@@ -1,0 +1,62 @@
+{
+    "ManifestVersion": 2,
+    "PackageId": "vcarea_test_adapter",
+    "PackageNameCN": "VCarEA 测试适配器",
+    "PackageNameEN": "VCarEA Test Adapter",
+    "PackageVersion": "1.0.0",
+    "DescriptionCN": "启动昆易 VCarEA 宿主并查询 MQTT 连接配置",
+    "DescriptionEN": "Start the Kunyi VCarEA host and query its MQTT connection configuration",
+    "Author": "DOTRUST",
+    "NodeType": "Test",
+    "NodeAdapterNameCN": "VCarEA 测试",
+    "NodeAdapterNameEN": "VCarEA Test",
+    "Runtime": {
+        "ApiVersion": "1.0",
+        "Language": "javascript",
+        "Workflow": "workflow.json"
+    },
+    "Permissions": {
+        "CLI": {
+            "Executables": [
+                {
+                    "Path": "C:\\KunyiSoftwares\\VCarEA\\VCarEA.exe"
+                },
+                {
+                    "DeviceProperty": "VCAR_EA_SOFTWARE_PATH"
+                }
+            ],
+            "AllowTerminal": false
+        }
+    },
+    "CallingRuntime": [
+        "CLI"
+    ],
+    "SelfExaminationAbility": true,
+    "RequirementProperty": [
+        {
+            "id": "VCAR_EA_PROJECT",
+            "nameCN": "VCarEA 工程",
+            "nameEN": "VCarEA Project",
+            "type": "file",
+            "fileExtension": ".zip",
+            "required": true
+        }
+    ],
+    "OnDeviceProperty": [
+        {
+            "id": "VCAR_EA_SOFTWARE_PATH",
+            "nameCN": "VCarEA 软件路径",
+            "nameEN": "VCarEA Software Path",
+            "type": "string_url_file",
+            "fileExtension": ".exe",
+            "required": false
+        },
+        {
+            "id": "VCAR_EA_WORK_DIR",
+            "nameCN": "VCarEA 工作目录",
+            "nameEN": "VCarEA Work Directory",
+            "type": "string_url_dir",
+            "required": false
+        }
+    ]
+}
