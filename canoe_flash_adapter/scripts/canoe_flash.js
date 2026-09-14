@@ -39,6 +39,7 @@ function debug(message) {
 }
 
 const canoe = new CanoeSession({
+    version: task.device("CANOE_VERSION"),
     intervalMs: CANOE_POLL_INTERVAL_MS,
     debug
 });

@@ -6,10 +6,21 @@ import * as task from "@atech/task";
 import {Poller, errorMessage} from "./poller.js";
 
 const CANOE_PROG_ID = "CANoe.Application";
+const SUPPORTED_CANOE_VERSIONS = ["19", "20"];
 const DEFAULT_TIMEOUT_MS = 120000;
 const CANOE_CLASS_FACTORY_GRACE_MS = 5000;
 const CANOE_NOT_READY_CODE = "CANOE_NOT_READY";
 const CANOE_INSTANCE_MISMATCH_CODE = "CANOE_INSTANCE_MISMATCH";
+const CANOE_VERSION_MISMATCH_CODE = "CANOE_VERSION_MISMATCH";
+
+function normalizeCanoeVersion(value) {
+    const version = String(value === undefined || value === null ? "" : value).trim();
+    if (!SUPPORTED_CANOE_VERSIONS.includes(version)) {
+        throw new Error(
+            `Unsupported CANoe version "${version}"; expected 19 or 20`);
+    }
+    return version;
+}
 
 function release(object) {
     if (object === null || object === undefined) {
@@ -138,7 +149,8 @@ function versionText(version) {
 }
 
 export class CanoeSession {
-    constructor({intervalMs = 250, debug = null} = {}) {
+    constructor({version, intervalMs = 250, debug = null} = {}) {
+        this.version = normalizeCanoeVersion(version);
         this.waiter = new Poller({intervalMs, debug});
         this.debug = typeof debug === "function" ? debug : () => {};
         this.application = null;
@@ -256,25 +268,42 @@ export class CanoeSession {
         }
     }
 
-    validateStartedApplication(application) {
-        if (this.executable === "") {
-            return {fullName: "", path: "", version: ""};
-        }
-
+    validateApplication(application) {
         let version = null;
-        let fullName;
-        let applicationPath;
         let applicationVersion;
         try {
-            fullName = application.get("FullName");
-            applicationPath = application.get("Path");
             version = application.get("Version");
             applicationVersion = versionText(version);
         } catch (error) {
             throw contextualError(
-                "Unable to identify the started CANoe Automation instance", error);
+                "Unable to identify the CANoe Automation version", error);
         } finally {
             release(version);
+        }
+
+        const actualMajorVersion = applicationVersion.split(".")[0];
+        if (actualMajorVersion !== this.version) {
+            const error = new Error(
+                `CANoe Automation version mismatch: configured version="${this.version}", `
+                + `connected version="${applicationVersion || "unknown"}"`);
+            error.code = CANOE_VERSION_MISMATCH_CODE;
+            error.canoeFatal = true;
+            throw error;
+        }
+
+        if (this.executable === "") {
+            this.debug(`connect: verified CANoe Automation version=${applicationVersion}`);
+            return {fullName: "", path: "", version: applicationVersion};
+        }
+
+        let fullName;
+        let applicationPath;
+        try {
+            fullName = application.get("FullName");
+            applicationPath = application.get("Path");
+        } catch (error) {
+            throw contextualError(
+                "Unable to identify the started CANoe Automation executable", error);
         }
 
         const expected = normalizeNativePath(this.executable);
@@ -316,6 +345,9 @@ export class CanoeSession {
         } catch (error) {
             release(candidate);
             this.ensureLaunchedProcessRunning();
+            if (error && error.code === CANOE_VERSION_MISMATCH_CODE) {
+                throw error;
+            }
             if (error && error.code === CANOE_INSTANCE_MISMATCH_CODE) {
                 this.debug(`connect: rejected active CANoe instance: ${errorMessage(error)}`);
             }
@@ -412,26 +444,23 @@ export class CanoeSession {
             return false;
         }
         let candidate = null;
-        let candidateMeasurement = null;
         try {
             candidate = com.getActive(CANOE_PROG_ID);
-            candidateMeasurement = candidate.get("Measurement");
-            candidateMeasurement.get("Running");
-            this.adopt(candidate, candidateMeasurement);
+            this.adopt(candidate, null);
             candidate = null;
-            candidateMeasurement = null;
+            this.refreshMeasurement();
             return true;
-        } catch (_) {
-            release(candidateMeasurement);
+        } catch (error) {
             release(candidate);
+            if (error && error.code === CANOE_VERSION_MISMATCH_CODE) {
+                throw error;
+            }
             return false;
         }
     }
 
     adopt(application, measurement) {
-        if (this.executable !== "") {
-            this.validateStartedApplication(application);
-        }
+        this.validateApplication(application);
         if (this.measurement !== measurement) {
             release(this.measurement);
         }

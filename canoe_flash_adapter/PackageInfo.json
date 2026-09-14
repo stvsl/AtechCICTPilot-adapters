@@ -64,6 +64,25 @@
     ],
     "OnDeviceProperty": [
         {
+            "id": "CANOE_VERSION",
+            "nameCN": "CANoe 版本",
+            "nameEN": "CANoe Version",
+            "type": "enum",
+            "values": [
+                {
+                    "id": "19",
+                    "nameCN": "CANoe 19",
+                    "nameEN": "CANoe 19"
+                },
+                {
+                    "id": "20",
+                    "nameCN": "CANoe 20",
+                    "nameEN": "CANoe 20"
+                }
+            ],
+            "required": true
+        },
+        {
             "id": "CANOE_SOFTWARE_POSITION",
             "nameCN": "CANoe 可执行文件",
             "nameEN": "CANoe Executable",
