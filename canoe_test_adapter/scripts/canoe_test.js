@@ -3,9 +3,14 @@ import * as cli from "@atech/cli";
 import * as task from "@atech/task";
 
 import {
-    configureNativeReportAutomation,
-    generateNativeReportOutputs
+    configureNativeReport,
+    waitForNativeReportOutputs
 } from "./canoe_test/report_automation.js";
+import {
+    decodeCliText,
+    isNativeReportUri,
+    ReportFileTracker
+} from "./canoe_test/report_files.js";
 import {
     CanoeSession,
     isAutomationDisconnectFailure
@@ -22,6 +27,7 @@ const CANOE_MEASUREMENT_START_TIMEOUT_MS = 120000;
 const CANOE_POLL_INTERVAL_MS = 250;
 const CANOE_REPORT_GENERATION_TIMEOUT_MS = 120000;
 const CANOE_REPORT_CONVERSION_TIMEOUT_MS = 120000;
+const CANOE_REPORT_STABLE_OBSERVATIONS = 3;
 const CANOE_REPORT_FORMAT_VTESTREPORT = 1;
 const CANOE_REPORT_FORMAT_XML = 2;
 
@@ -52,11 +58,10 @@ let activeCommunicationModules = [];
 let communicationScriptUris = [];
 let communicationModuleNames = [];
 let reportTypes = [];
-let nativeReportAutomationTargets = [];
 let generatedReports = [];
 let executionFailureMessage = "";
 let reportErrors = [];
-let reportFileBaseline = [];
+let reportFileTracker = new ReportFileTracker();
 let publishedArtifactUris = [];
 let testStarted = false;
 let expectedResultCount = 0;
@@ -352,52 +357,35 @@ function nativeReportFormat() {
         ? CANOE_REPORT_FORMAT_VTESTREPORT : CANOE_REPORT_FORMAT_XML;
 }
 
-function isNativeReportUri(uri) {
-    const lower = String(uri === undefined || uri === null ? "" : uri)
-        .toLowerCase();
-    return lower.endsWith(".vtestreport") || lower.endsWith(".xml");
-}
-
-function likelyNativeReportUri(uri) {
-    const lower = String(uri === undefined || uri === null ? "" : uri)
-        .toLowerCase();
-    return lower.endsWith(".vtestreport")
-        || (lower.endsWith(".xml")
-            && (lower.includes("/report") || lower.includes("report.")));
-}
-
-function reportFileSnapshot() {
+function reportFileSnapshot(uris = null) {
     try {
-        return fs.list(projectRootUri, true)
-            .filter((entry) => entry.type === "file" && isNativeReportUri(entry.uri))
+        const entries = Array.isArray(uris)
+            ? uris.filter((uri, index) => uris.indexOf(uri) === index)
+                .filter((uri) => fs.exists(uri))
+                .map((uri) => fs.stat(uri))
+            : fs.list(projectRootUri, true);
+        return entries
+            .filter((entry) => entry.type === "file"
+                && isNativeReportUri(entry.uri))
             .map((entry) => ({
                 uri: entry.uri,
                 size: Number(entry.size) || 0,
-                modifiedAt: String(entry.modifiedAt || "")
+                modifiedAt: entry.modifiedAt
             }));
     } catch (error) {
-        debug(`report discovery: unable to list project files: ${errorMessage(error)}`);
+        debug(`report discovery: unable to inspect project files: ${errorMessage(error)}`);
         return [];
     }
 }
 
-function reportFileChanged(entry) {
-    const previous = reportFileBaseline.find((candidate) =>
-        candidate.uri === entry.uri);
-    return previous === undefined
-        || previous.size !== entry.size
-        || previous.modifiedAt !== entry.modifiedAt;
-}
-
 function reportObjectWrittenUri(report) {
     // 只读取 CANoe 生成后的只读属性，绝不改写报告对象的输出路径。
-    const nativePath = optionalProperty(report, "LastWrittenFullPath")
-        || optionalProperty(report, "LastWrittenFullName");
+    const nativePath = optionalProperty(report, "LastWrittenFullPath");
     const uri = nativePathToWorkspaceUri(nativePath);
-    return uri && isNativeReportUri(uri) && fs.exists(uri) ? uri : "";
+    return uri && isNativeReportUri(uri) ? uri : "";
 }
 
-function discoveredNativeReportUris() {
+function preferredNativeReportUris() {
     const uris = [];
     if (testConfigurationReport !== null
             && testConfigurationReport !== undefined) {
@@ -406,15 +394,18 @@ function discoveredNativeReportUris() {
             uris.push(uri);
         }
     }
-    for (const entry of reportFileSnapshot()) {
-        if (!likelyNativeReportUri(entry.uri) || !reportFileChanged(entry)) {
-            continue;
-        }
-        if (!uris.includes(entry.uri)) {
-            uris.push(entry.uri);
-        }
-    }
     return uris;
+}
+
+function stableNativeReportUris() {
+    const preferredUris = preferredNativeReportUris();
+    // VTEST 只检查 Report 对象确认的最终路径，避免目录扫描提前拾取
+    // CANoe 随后还会删除并重建的临时报告。
+    const entries = testConfigurationReport !== null
+            && testConfigurationReport !== undefined
+        ? reportFileSnapshot(preferredUris) : reportFileSnapshot();
+    const stableEntries = reportFileTracker.observe(entries, preferredUris);
+    return stableEntries.map((entry) => entry.uri);
 }
 
 function parseIds(uri) {
@@ -721,20 +712,29 @@ function reportViewerExecutable() {
 }
 
 
-function reportViewerFailure(result, type) {
+function reportViewerFailure(result, type, nativeReportPath) {
     const details = [result.standardError, result.standardOutput]
-        .map((value) => String(value === undefined || value === null ? "" : value).trim())
+        .map(decodeCliText)
         .filter((value) => value !== "")
         .join("; ");
     const suffix = details === "" ? "" : `: ${details}`;
-    return `CANoe Report Viewer failed to create ${type} (exit code ${result.exitCode})${suffix}`;
+    return `CANoe Report Viewer failed to create ${type} from "${nativeReportPath}" `
+        + `(exit code ${result.exitCode})${suffix}`;
 }
 
 function runReportViewer(nativeReportUri, option, outputUri, type, executable) {
+    const nativeReportPath = fs.nativePath(nativeReportUri);
+    if (!fs.exists(nativeReportUri)) {
+        throw new Error(`CANoe Report Viewer source report is missing: ${nativeReportPath}`);
+    }
+    if (fs.exists(outputUri)) {
+        // 输出文件由本次转换独占，避免把上一次执行遗留的文件误判为新结果。
+        fs.remove(outputUri);
+    }
     const result = cli.run({
         executable,
         arguments: [
-            `-r=${fs.nativePath(nativeReportUri)}`,
+            `-r=${nativeReportPath}`,
             `${option}=${fs.nativePath(outputUri)}`
         ],
         workingDirectoryUri: projectRootUri,
@@ -742,7 +742,7 @@ function runReportViewer(nativeReportUri, option, outputUri, type, executable) {
                                 CANOE_REPORT_CONVERSION_TIMEOUT_MS)
     });
     if (result.crashed || result.exitCode !== 0) {
-        throw new Error(reportViewerFailure(result, type));
+        throw new Error(reportViewerFailure(result, type, nativeReportPath));
     }
     if (!fs.exists(outputUri)) {
         throw new Error(`CANoe Report Viewer did not create the requested ${type} report`);
@@ -806,19 +806,16 @@ function convertNativeReports(nativeReportUris, type, option) {
 }
 
 async function generateSelectedReports() {
-    const nativeReportUris = await generateNativeReportOutputs({
+    const nativeReportUris = await waitForNativeReportOutputs({
         requested: nativeReportRequested(),
-        automationTargets: nativeReportAutomationTargets,
-        discover: discoveredNativeReportUris,
         waitForDiscovery: () => wait.until(
-            () => discoveredNativeReportUris(),
+            () => stableNativeReportUris(),
             {
                 timeoutMs: canoeTimeout("ReportGenerationTimeoutMs",
                                          CANOE_REPORT_GENERATION_TIMEOUT_MS),
                 description: "CANoe reports to be generated",
                 isReady: (value) => value.length > 0
             }),
-        debug,
         abortOnError: throwIfAutomationDisconnected,
         recordError: addReportError
     });
@@ -1190,11 +1187,10 @@ export async function prepare(projectPackage) {
     testConfigurationReport = null;
     testUnits = null;
     reportTypes = [];
-    nativeReportAutomationTargets = [];
     generatedReports = [];
     executionFailureMessage = "";
     reportErrors = [];
-    reportFileBaseline = [];
+    reportFileTracker = new ReportFileTracker();
     publishedArtifactUris = [];
     testMode = "";
     requestedIds = [];
@@ -1312,15 +1308,16 @@ export async function configure() {
     } else {
         configureVtest();
     }
-    reportFileBaseline = reportFileSnapshot();
-    nativeReportAutomationTargets = configureNativeReportAutomation({
+    configureNativeReport({
         mode: testMode,
         requested: nativeReportRequested(),
         testConfigurationReport,
         format: nativeReportFormat(),
-        debug,
         abortOnError: throwIfAutomationDisconnected
     });
+    const reportFileBaseline = reportFileSnapshot();
+    reportFileTracker = new ReportFileTracker(
+        reportFileBaseline, CANOE_REPORT_STABLE_OBSERVATIONS);
     debug(`configure: completed (mode=${testMode})`);
     task.progress(15);
 }
@@ -1540,11 +1537,10 @@ export async function cleanup() {
         requestedIds = [];
         results = [];
         reportTypes = [];
-        nativeReportAutomationTargets = [];
         generatedReports = [];
         executionFailureMessage = "";
         reportErrors = [];
-        reportFileBaseline = [];
+        reportFileTracker = new ReportFileTracker();
         publishedArtifactUris = [];
         testMode = "";
         projectDescriptor = null;
