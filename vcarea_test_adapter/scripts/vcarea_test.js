@@ -29,6 +29,13 @@ const QUERY_TIMEOUT_MS = 20000;
 // 启动后等待宿主连接服务就绪的上限，受阶段 timeout 二次约束。
 const READINESS_TIMEOUT_MS = 120000;
 const READINESS_POLL_MS = 1000;
+// 等待期间每隔多少次探测输出一次进度日志，避免长时间无输出被误认为卡死。
+const READINESS_REPORT_ATTEMPTS = 10;
+
+// 运行时在 dllnet worker 崩溃后重建会话时返回的错误标识；旧程序集/对象
+// 句柄随之全部失效，需要重新加载 Connector SDK 才能继续调用。
+const SESSION_RESET_MESSAGE = "DLL worker session was reset";
+const HANDLE_INVALID_MESSAGE = "Assembly handle is invalid";
 
 const WORKSPACE_CONFIG_URI = "workspace://vcarea/mqtt-config.json";
 const ARTIFACT_CONFIG_URI = "artifact://vcarea/mqtt-config.json";
@@ -59,6 +66,29 @@ function describeError(error) {
     return rendered === "" || rendered === "{}"
         ? `${code}${message}`
         : `${code}${message}（${rendered}）`;
+}
+
+/** 判断错误是否表示 dllnet worker 会话已崩溃并重置（旧句柄全部失效）。 */
+function isSessionResetError(error) {
+    const text = describeError(error);
+    return text.includes(SESSION_RESET_MESSAGE)
+        || text.includes(HANDLE_INVALID_MESSAGE);
+}
+
+/** 丢弃当前 SDK 程序集句柄；下次调用时会在全新 worker 上重新加载。 */
+function dropSdkSession(reason) {
+    if (sdkAssembly === null) {
+        return;
+    }
+    task.warning(
+        `dllnet worker 会话已崩溃重置（${reason}），将在下次调用时重新加载 Connector SDK`);
+    try {
+        // 会话重置后旧句柄已失效，close 只是宿主侧清理，不会产生 worker 调用。
+        sdkAssembly.close();
+    } catch (_) {
+        // 句柄失效导致的释放失败可以安全忽略。
+    }
+    sdkAssembly = null;
 }
 
 function decodeText(bytes) {
@@ -140,13 +170,18 @@ function closeClient(client, dispose = true) {
         try {
             client.call("Dispose");
         } catch (error) {
-            task.warning(`释放连接客户端失败：${describeError(error)}`);
+            // 会话重置后旧句柄失效属预期情况，静默跳过避免恢复期刷告警。
+            if (!isSessionResetError(error)) {
+                task.warning(`释放连接客户端失败：${describeError(error)}`);
+            }
         }
     }
     try {
         client.close();
     } catch (error) {
-        task.warning(`关闭连接客户端句柄失败：${describeError(error)}`);
+        if (!isSessionResetError(error)) {
+            task.warning(`关闭连接客户端句柄失败：${describeError(error)}`);
+        }
     }
 }
 
@@ -159,6 +194,9 @@ function probeConnectionService(timeoutMs) {
         connected = true;
         return true;
     } catch (error) {
+        if (isSessionResetError(error)) {
+            dropSdkSession(describeError(error));
+        }
         task.info(`连接服务暂不可用：${describeError(error)}`);
         return false;
     } finally {
@@ -176,6 +214,9 @@ function probeConnectionServiceKey(key, timeoutMs) {
         connected = true;
         return info !== null;
     } catch (error) {
+        if (isSessionResetError(error)) {
+            dropSdkSession(describeError(error));
+        }
         task.info(`连接服务 [${key}] 暂不可用：${describeError(error)}`);
         return false;
     } finally {
@@ -211,13 +252,27 @@ function ensureProcessRunning() {
 
 /** 轮询 Connector SDK，直到宿主连接服务就绪或超出等待上限。 */
 function waitForConnectionService(key) {
-    const deadline = Date.now() + READINESS_TIMEOUT_MS;
+    const startedAt = Date.now();
+    const deadline = startedAt + READINESS_TIMEOUT_MS;
+    let attempts = 0;
     while (Date.now() < deadline) {
         task.checkCancelled();
         ensureProcessRunning();
+        attempts += 1;
         if (probeConnectionServiceKey(key, CONNECT_PROBE_TIMEOUT_MS)) {
             task.info(`VCarEA 宿主连接服务 [${key}] 已就绪`);
             return;
+        }
+        // 周期性输出等待进度：中心服务冷启动可能延迟数十秒，期间还会有
+        // worker 会话崩溃重置的恢复日志，进度行能明确区分"仍在等待"与"卡死"。
+        if (attempts % READINESS_REPORT_ATTEMPTS === 0
+                && Date.now() < deadline) {
+            const waitedSeconds =
+                Math.round((Date.now() - startedAt) / 1000);
+            const limitSeconds = Math.round(READINESS_TIMEOUT_MS / 1000);
+            task.info(
+                `已等待宿主连接服务 [${key}] ${waitedSeconds} 秒`
+                + `（上限 ${limitSeconds} 秒），VCarEA 冷启动时中心服务可能延迟就绪`);
         }
         task.delay(READINESS_POLL_MS);
     }
@@ -326,6 +381,10 @@ export function readMqttConfig() {
     try {
         client = connectClient(CONNECT_QUERY_TIMEOUT_MS);
     } catch (error) {
+        // launch 与本阶段之间 worker 会话可能已崩溃；丢弃会话让重试重新加载。
+        if (isSessionResetError(error)) {
+            dropSdkSession(describeError(error));
+        }
         throw new Error(
             `连接中心服务失败：${describeError(error)}；`
             + `请确认 ${requireInstallation().CentralServicePath} 已在运行`);
@@ -341,6 +400,9 @@ export function readMqttConfig() {
                                {timeoutMs: QUERY_TIMEOUT_MS});
             connected = true;
         } catch (error) {
+            if (isSessionResetError(error)) {
+                dropSdkSession(describeError(error));
+            }
             throw new Error(`查询连接服务 [${key}] 失败：${describeError(error)}`);
         }
         if (info === null || info === undefined) {
