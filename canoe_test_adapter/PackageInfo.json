@@ -73,14 +73,14 @@
                     "nameEN": "CANoe XML Report"
                 },
                 {
-                    "id": "XUnit",
-                    "nameCN": "CANoe Report Viewer XUnit 导出",
-                    "nameEN": "CANoe Report Viewer XUnit Export"
+                    "id": "HTML",
+                    "nameCN": "CANoe HTML 报告",
+                    "nameEN": "CANoe HTML Report"
                 },
                 {
                     "id": "PDF",
-                    "nameCN": "CANoe Report Viewer PDF 导出",
-                    "nameEN": "CANoe Report Viewer PDF Export"
+                    "nameCN": "CANoe Report Viewer PDF 报告",
+                    "nameEN": "CANoe Report Viewer PDF Report"
                 }
             ],
             "required": true

@@ -9,6 +9,7 @@ import {
 import {
     decodeCliText,
     isNativeReportUri,
+    nativeVtestReportArtifactPath,
     ReportFileTracker
 } from "./canoe_test/report_files.js";
 import {
@@ -31,15 +32,14 @@ const CANOE_REPORT_STABLE_OBSERVATIONS = 3;
 const CANOE_REPORT_FORMAT_VTESTREPORT = 1;
 const CANOE_REPORT_FORMAT_XML = 2;
 
+const REPORT_TYPE_VTESTREPORT = "vtestreport";
 const REPORT_TYPE_XML = "XML";
 const REPORT_TYPE_PDF = "PDF";
-const REPORT_TYPE_XUNIT = "XUnit";
-const REPORT_TYPE_VTESTREPORT = "vtestreport";
+// 必须与 PackageInfo.json 中 CANOE_REPORT_TYPE.values 的 ID 及顺序一致。
 const SUPPORTED_REPORT_TYPES = [
+    REPORT_TYPE_VTESTREPORT,
     REPORT_TYPE_XML,
-    REPORT_TYPE_PDF,
-    REPORT_TYPE_XUNIT,
-    REPORT_TYPE_VTESTREPORT
+    REPORT_TYPE_PDF
 ];
 
 let testConfiguration = null;
@@ -48,7 +48,6 @@ let testUnits = null;
 let projectDescriptor = null;
 let projectRootUri = "";
 let configurationUri = "";
-let reportUri = "";
 let scriptUris = [];
 let requestedIds = [];
 let results = [];
@@ -344,7 +343,6 @@ function reportsDirectoryUri() {
 function reportNeedsVtestReport() {
     return reportTypes.includes(REPORT_TYPE_VTESTREPORT)
         || reportTypes.includes(REPORT_TYPE_PDF)
-        || reportTypes.includes(REPORT_TYPE_XUNIT)
         || (reportTypes.includes(REPORT_TYPE_XML) && reportTypes.length > 1);
 }
 
@@ -608,13 +606,14 @@ function sameTestCase(left, right) {
     return left.testUnit === right.testUnit && left.id === right.id;
 }
 
-function publishCompletedResults(candidates) {
+function recordCompletedResults(candidates) {
     for (const candidate of candidates) {
         if (results.some((result) => sameTestCase(result, candidate))) {
             continue;
         }
         results.push(candidate);
-        publishTestCaseResult(candidate, results.length, expectedResultCount);
+        task.info(`[CANoe result] ${results.length}/${expectedResultCount}: `
+            + `${candidate.id} - ${candidate.verdict}`);
     }
 }
 
@@ -647,47 +646,6 @@ function configuredTestCases(units) {
         }
     }
     return output;
-}
-
-function publishTestCaseResult(result, sequence, total) {
-    const number = String(sequence).padStart(4, "0");
-    const relative = `results/test-case-${number}.json`;
-    const source = `${projectRootUri}/${relative}`;
-    const destination = `artifact://canoe-test/${relative}`;
-    fs.mkdir(`${projectRootUri}/results`);
-    fs.writeText(source, JSON.stringify({
-        taskId: task.id(),
-        sequence,
-        total,
-        result
-    }, null, 2));
-    fs.copy(source, destination, true);
-    task.publish(`TEST_RESULT:${number}`,
-                 destination,
-                 `Test case ${sequence}: ${result.id}`,
-                 "application/json");
-    task.info(`[CANoe result] ${sequence}/${total}: ${result.id} - ${result.verdict}`);
-}
-
-function writeResultsReport(publish = true) {
-    const source = `${projectRootUri}/test-results.json`;
-    const passed = testPassed();
-    fs.writeText(source, JSON.stringify({
-        taskId: task.id(),
-        status: passed ? "passed" : "failed",
-        reportErrors: reportErrors.slice(),
-        results
-    }, null, 2));
-    reportUri = source;
-    if (!publish) {
-        return;
-    }
-    const destination = "artifact://canoe-test/test-results.json";
-    fs.copy(source, destination, true);
-    task.publish("REPORT_URI",
-                 destination,
-                 "CANoe test results",
-                 "application/json");
 }
 
 function testPassed() {
@@ -751,9 +709,6 @@ function runReportViewer(nativeReportUri, option, outputUri, type, executable) {
 
 function reportOutputUri(type, index, total) {
     const suffix = total === 1 ? "" : `-${index + 1}`;
-    if (type === REPORT_TYPE_XUNIT) {
-        return `${reportsDirectoryUri()}/canoe-test.xunit${suffix}.xml`;
-    }
     return `${reportsDirectoryUri()}/canoe-test${suffix}.${type.toLowerCase()}`;
 }
 
@@ -833,7 +788,6 @@ async function generateSelectedReports() {
             && !nativeReportUris.some((uri) => uri.toLowerCase().endsWith(".xml"))) {
         convertNativeReports(nativeReportUris, REPORT_TYPE_XML, "-e");
     }
-    convertNativeReports(nativeReportUris, REPORT_TYPE_XUNIT, "--xunit");
     convertNativeReports(nativeReportUris, REPORT_TYPE_PDF, "-p");
 }
 
@@ -1132,14 +1086,12 @@ function parseReportTypes(value) {
     const selected = [];
     for (const entry of String(value === undefined || value === null ? "" : value)
         .split(",")) {
-        const normalized = normalize(entry);
-        if (normalized === "") {
+        const reportType = entry.trim();
+        if (reportType === "") {
             continue;
         }
-        const reportType = SUPPORTED_REPORT_TYPES.find((candidate) =>
-            normalize(candidate) === normalized);
-        if (reportType === undefined) {
-            throw new Error(`CANOE_REPORT_TYPE contains an unsupported value: ${entry.trim()}`);
+        if (!SUPPORTED_REPORT_TYPES.includes(reportType)) {
+            throw new Error(`CANOE_REPORT_TYPE contains an unsupported value: ${reportType}`);
         }
         if (!selected.includes(reportType)) {
             selected.push(reportType);
@@ -1177,7 +1129,6 @@ export async function prepare(projectPackage) {
     debug("prepare: starting");
     projectRootUri = "workspace://canoe-test/project";
     configurationUri = "";
-    reportUri = "";
     scriptUris = [];
     communicationModules = [];
     activeCommunicationModules = [];
@@ -1343,7 +1294,7 @@ export async function execute() {
             await wait.until(() => {
                 const pending = objectRunning(module, true)
                     || completedCaseCount([module]) < expectedModuleResultCount;
-                publishCompletedResults(collectVerdictsFrom([module]));
+                recordCompletedResults(collectVerdictsFrom([module]));
                 task.progress(Math.min(90, 20 + results.length * 5));
                 return !pending;
             }, {
@@ -1351,7 +1302,7 @@ export async function execute() {
                 description: "CANoe communication test module to finish",
                 isReady: (value) => value === true
             });
-            publishCompletedResults(collectVerdictsFrom([module]));
+            recordCompletedResults(collectVerdictsFrom([module]));
         }
     } else {
         if (testConfiguration === null) {
@@ -1362,7 +1313,7 @@ export async function execute() {
         testStarted = true;
         await wait.until(() => {
             const pending = moduleRunning() || results.length < expectedResultCount;
-            publishCompletedResults(collectVerdicts());
+            recordCompletedResults(collectVerdicts());
             const progress = results.length === 0
                 ? 20 : Math.min(90, 20 + results.length * 5);
             task.progress(progress);
@@ -1373,8 +1324,7 @@ export async function execute() {
             isReady: (value) => value === true
         });
     }
-    publishCompletedResults(collectVerdicts());
-    writeResultsReport(false);
+    recordCompletedResults(collectVerdicts());
     try {
         await generateSelectedReports();
     } catch (error) {
@@ -1398,9 +1348,6 @@ function reportMediaType(type) {
     if (type === REPORT_TYPE_XML) {
         return "application/xml";
     }
-    if (type === REPORT_TYPE_XUNIT) {
-        return "application/xml";
-    }
     if (type === REPORT_TYPE_PDF) {
         return "application/pdf";
     }
@@ -1419,13 +1366,18 @@ function publishArtifact(source, relative, publicationId, mediaType) {
 
 function publishSelectedReports() {
     const typeCounts = {};
+    const publishedReportPaths = [];
     for (const report of generatedReports) {
         if (!fs.exists(report.uri)) {
             addReportError(`Requested CANoe ${report.type} report is missing`);
             continue;
         }
         try {
-            const relative = relativePath(projectRootUri, report.uri);
+            const sourceRelative = relativePath(projectRootUri, report.uri);
+            const relative = report.type === REPORT_TYPE_VTESTREPORT
+                ? nativeVtestReportArtifactPath(sourceRelative,
+                                                publishedReportPaths)
+                : sourceRelative;
             const count = (typeCounts[report.type] || 0) + 1;
             typeCounts[report.type] = count;
             const publicationId = count === 1
@@ -1433,6 +1385,7 @@ function publishSelectedReports() {
                 : `CANOE_REPORT:${report.type}:${count}`;
             publishArtifact(report.uri, relative, publicationId,
                             reportMediaType(report.type));
+            publishedReportPaths.push(relative);
         } catch (error) {
             addReportError(`Unable to publish CANoe ${report.type} report: ${errorMessage(error)}`);
         }
@@ -1441,23 +1394,6 @@ function publishSelectedReports() {
 
 export async function collectArtifacts() {
     debug("collectArtifacts: starting");
-    if (!reportUri) {
-        try {
-            writeResultsReport(false);
-        } catch (error) {
-            addReportError(`Unable to write CANoe execution summary: ${errorMessage(error)}`);
-        }
-    }
-    if (reportUri && fs.exists(reportUri)) {
-        try {
-            publishArtifact(reportUri,
-                            relativePath(projectRootUri, reportUri),
-                            "REPORT_URI",
-                            "application/json");
-        } catch (error) {
-            addReportError(`Unable to publish CANoe execution summary: ${errorMessage(error)}`);
-        }
-    }
     publishSelectedReports();
     const paths = Array.isArray(projectDescriptor && projectDescriptor.Artifacts)
         ? projectDescriptor.Artifacts.slice() : [];
@@ -1465,9 +1401,6 @@ export async function collectArtifacts() {
         try {
             const relative = requireSafeRelativePath(path, "Artifacts entry");
             const source = `${projectRootUri}/${relative}`;
-            if (source === reportUri) {
-                continue;
-            }
             if (!fs.exists(source)) {
                 task.warning(`CANoe test artifact is missing: ${relative}`);
                 continue;
@@ -1490,7 +1423,7 @@ export async function collectArtifacts() {
         task.progress(100);
         throw new Error(failures.join("; "));
     }
-    debug(`collectArtifacts: completed (paths=${paths.length})`);
+    debug(`collectArtifacts: completed (reports=${generatedReports.length}, paths=${paths.length})`);
     task.progress(100);
 }
 
@@ -1546,7 +1479,6 @@ export async function cleanup() {
         projectDescriptor = null;
         projectRootUri = "";
         configurationUri = "";
-        reportUri = "";
         expectedResultCount = 0;
         selectedTestCases = [];
         testStarted = false;

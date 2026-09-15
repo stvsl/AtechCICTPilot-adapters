@@ -36,9 +36,36 @@ export function isNativeReportUri(uri) {
     return lower.endsWith(".vtestreport") || lower.endsWith(".xml");
 }
 
+// 原生报告统一发布到 reports；同名文件按发布顺序加编号，避免静默覆盖。
+export function nativeVtestReportArtifactPath(uri, occupiedPaths = []) {
+    if (!Array.isArray(occupiedPaths)) {
+        throw new Error("occupiedPaths must be an array");
+    }
+    const normalizedSource = text(uri).trim().replace(/\\/g, "/");
+    const fileName = normalizedSource.substring(normalizedSource.lastIndexOf("/") + 1);
+    const extension = ".vtestreport";
+    if (!fileName.toLowerCase().endsWith(extension)) {
+        throw new Error(`CANoe native report must end with ${extension}: ${uri}`);
+    }
+
+    const sourceExtension = fileName.substring(fileName.length - extension.length);
+    const stem = fileName.substring(0, fileName.length - extension.length);
+    const occupied = new Set(occupiedPaths.map(normalizedUri));
+    let candidate = `reports/${fileName}`;
+    let sequence = 2;
+    while (occupied.has(normalizedUri(candidate))) {
+        candidate = `reports/${stem}-${sequence}${sourceExtension}`;
+        ++sequence;
+    }
+    return candidate;
+}
+
 function isLikelyNativeReportUri(uri) {
     const lower = normalizedUri(uri);
-    return lower.endsWith(".vtestreport")
+    const fileName = lower.substring(Math.max(lower.lastIndexOf("/"),
+                                               lower.lastIndexOf("\\")) + 1);
+    const isTemporaryVtestReport = /^rpt[0-9a-f]+\.vtestreport$/.test(fileName);
+    return (lower.endsWith(".vtestreport") && !isTemporaryVtestReport)
         || (lower.endsWith(".xml")
             && (lower.includes("/report") || lower.includes("report.")));
 }
@@ -140,7 +167,9 @@ export function decodeCliText(value) {
 
 /*
  * CANoe 可能先保留上一次报告路径，再异步删除并重建同名文件。跟踪器只接收
- * 相对基线有变化、非空且连续多个完整快照一致的报告，避免消费旧文件或半成品。
+ * 相对基线有变化、非空且连续多个完整快照一致的报告。目录扫描还会排除 CANoe 在
+ * 配置目录中生成的 rpt<十六进制>.vtestreport 暂存文件，避免在它被移动到
+ * 最终报告路径前提前转换或发布。
  */
 export class ReportFileTracker {
     constructor(baseline = [], stableObservations = 3) {
