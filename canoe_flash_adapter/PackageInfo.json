@@ -25,7 +25,12 @@
         "CLI": {
             "Executables": [
                 {
-                    "DeviceProperty": "CANOE_SOFTWARE_POSITION"
+                    "Id": "CANOE_EXECUTABLE",
+                    "WindowsInstalledProduct": {
+                        "DisplayNameTemplate": "Vector CANoe {version}",
+                        "VersionDeviceProperty": "CANOE_VERSION",
+                        "RelativePath": "Exec64/CANoe64.exe"
+                    }
                 }
             ],
             "AllowTerminal": false
@@ -80,14 +85,6 @@
                     "nameEN": "CANoe 20"
                 }
             ],
-            "required": true
-        },
-        {
-            "id": "CANOE_SOFTWARE_POSITION",
-            "nameCN": "CANoe 可执行文件",
-            "nameEN": "CANoe Executable",
-            "type": "string_url_file",
-            "fileExtension": ".exe",
             "required": true
         },
         {
