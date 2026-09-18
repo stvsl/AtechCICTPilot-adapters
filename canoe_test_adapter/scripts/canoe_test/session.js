@@ -7,7 +7,7 @@ import {Poller, errorMessage} from "./poller.js";
 
 const CANOE_PROG_ID = "CANoe.Application";
 const CANOE_EXECUTABLE_ID = "CANOE_EXECUTABLE";
-const SUPPORTED_CANOE_VERSIONS = ["19", "20"];
+const SUPPORTED_CANOE_VERSIONS = ["17", "18", "19", "20"];
 const DEFAULT_TIMEOUT_MS = 120000;
 const CANOE_CLASS_FACTORY_GRACE_MS = 5000;
 const CANOE_NOT_READY_CODE = "CANOE_NOT_READY";
@@ -18,7 +18,8 @@ function normalizeCanoeVersion(value) {
     const version = String(value === undefined || value === null ? "" : value).trim();
     if (!SUPPORTED_CANOE_VERSIONS.includes(version)) {
         throw new Error(
-            `Unsupported CANoe version "${version}"; expected 19 or 20`);
+            `Unsupported CANoe version "${version}"; expected one of `
+            + SUPPORTED_CANOE_VERSIONS.join(", "));
     }
     return version;
 }
