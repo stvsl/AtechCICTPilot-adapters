@@ -8,12 +8,11 @@
     "DescriptionEN": "Start the Kunyi VCarEA host and query its MQTT connection configuration",
     "Author": "DOTRUST",
     "NodeType": "Test",
-    "NodeAdapterNameCN": "VCarEA 测试",
-    "NodeAdapterNameEN": "VCarEA Test",
+    "CapabilityNameCN": "VCarEA 测试",
+    "CapabilityNameEN": "VCarEA Test",
     "Runtime": {
         "ApiVersion": "1.0",
-        "Language": "javascript",
-        "Workflow": "workflow.json"
+        "Language": "javascript"
     },
     "Permissions": {
         "CLI": {

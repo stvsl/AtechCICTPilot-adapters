@@ -8,12 +8,11 @@
     "DescriptionEN": "Test adapter for validating multi-stage execution, logs, progress, outputs, artifacts, cleanup, and long-running tasks",
     "Author": "DOTRUST",
     "NodeType": "Test",
-    "NodeAdapterNameCN": "Hello World",
-    "NodeAdapterNameEN": "Hello World",
+    "CapabilityNameCN": "Hello World",
+    "CapabilityNameEN": "Hello World",
     "Runtime": {
         "ApiVersion": "1.0",
-        "Language": "javascript",
-        "Workflow": "workflow.json"
+        "Language": "javascript"
     },
     "Permissions": {},
     "CallingRuntime": [],
