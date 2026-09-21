@@ -40,6 +40,38 @@
             "type": "file",
             "fileExtension": ".zip",
             "required": true
+        },
+        {
+            "id": "TEST_CASE_IDS",
+            "nameCN": "测试用例 ID（文本或 JSON 文件，可选）",
+            "nameEN": "Test Case IDs (text or JSON file, optional)",
+            "type": "text_file",
+            "fileExtension": ".json|.txt",
+            "required": false
+        },
+        {
+            "id": "VCAR_EA_REPORT_TYPE",
+            "nameCN": "VCarEA 测试报告类型",
+            "nameEN": "VCarEA Test Report Type",
+            "type": "enum_multi",
+            "values": [
+                {
+                    "id": "html",
+                    "nameCN": "HTML 报告",
+                    "nameEN": "HTML Report"
+                },
+                {
+                    "id": "pdf",
+                    "nameCN": "PDF 报告",
+                    "nameEN": "PDF Report"
+                },
+                {
+                    "id": "xlsx",
+                    "nameCN": "XLSX 报告",
+                    "nameEN": "XLSX Report"
+                }
+            ],
+            "required": true
         }
     ],
     "OnDeviceProperty": [
