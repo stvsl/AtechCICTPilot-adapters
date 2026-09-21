@@ -8,12 +8,11 @@
     "DescriptionEN": "Execute VTESTStudio test units through a CANoe Test Configuration",
     "Author": "DOTRUST",
     "NodeType": "Test",
-    "NodeAdapterNameCN": "CANoe 测试",
-    "NodeAdapterNameEN": "CANoe Test",
+    "CapabilityNameCN": "CANoe 测试",
+    "CapabilityNameEN": "CANoe Test",
     "Runtime": {
         "ApiVersion": "1.0",
-        "Language": "javascript",
-        "Workflow": "workflow.json"
+        "Language": "javascript"
     },
     "Permissions": {
         "COM": {
