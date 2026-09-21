@@ -89,6 +89,14 @@
             "nameEN": "VCarEA Work Directory",
             "type": "string_url_dir",
             "required": false
+        },
+        {
+            "id": "VCAR_EA_DEVICE_CONFIG_PATH",
+            "nameCN": "VCarEA 设备配置路径",
+            "nameEN": "VCarEA Device Configuration Path",
+            "type": "string_url_file",
+            "fileExtension": ".zip",
+            "required": false
         }
     ]
 }
