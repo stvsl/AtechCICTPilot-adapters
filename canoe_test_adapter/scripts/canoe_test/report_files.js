@@ -165,6 +165,22 @@ export function decodeCliText(value) {
     return text(value).trim();
 }
 
+function preferredCliStreamText(result, localTextField, bytesField) {
+    const localText = decodeCliText(result && result[localTextField]);
+    return localText !== ""
+        ? localText : decodeCliText(result && result[bytesField]);
+}
+
+// CLI 同时保留原始字节和宿主按本地代码页解码的文本；诊断信息优先使用后者。
+export function cliResultText(result) {
+    const values = [
+        preferredCliStreamText(result, "standardErrorLocalText", "standardError"),
+        preferredCliStreamText(result, "standardOutputLocalText", "standardOutput")
+    ].filter((value, index, items) => value !== ""
+        && items.indexOf(value) === index);
+    return values.join("; ");
+}
+
 /*
  * CANoe 可能先保留上一次报告路径，再异步删除并重建同名文件。跟踪器只接收
  * 相对基线有变化、非空且连续多个完整快照一致的报告。目录扫描还会排除 CANoe 在

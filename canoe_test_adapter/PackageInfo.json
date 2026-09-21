@@ -24,10 +24,29 @@
         "CLI": {
             "Executables": [
                 {
-                    "DeviceProperty": "CANOE_SOFTWARE_POSITION"
+                    "Id": "CANOE_EXECUTABLE",
+                    "WindowsInstalledProduct": {
+                        "DisplayNameTemplate": "Vector CANoe {version}",
+                        "VersionDeviceProperty": "CANOE_VERSION",
+                        "RelativePath": "Exec64/CANoe64.exe"
+                    }
                 },
                 {
-                    "DeviceProperty": "CANOE_REPORT_VIEWER_CLI"
+                    "Id": "CANOE_SABCMD",
+                    "WindowsInstalledProduct": {
+                        "DisplayNameTemplate": "Vector CANoe {version}",
+                        "VersionDeviceProperty": "CANOE_VERSION",
+                        "RelativePath": "Exec64/sabcmd.exe"
+                    }
+                },
+                {
+                    "Id": "CANOE_REPORT_VIEWER",
+                    "WindowsInstalledProduct": {
+                        "DisplayNameTemplate": "Vector CANoe Test Report Viewer {version}",
+                        "VersionDeviceProperty": "CANOE_VERSION",
+                        "RelativePath": "ReportViewerCli.exe",
+                        "AllowDisplayNameSuffix": true
+                    }
                 }
             ],
             "AllowTerminal": false
@@ -93,6 +112,16 @@
             "type": "enum",
             "values": [
                 {
+                    "id": "17",
+                    "nameCN": "CANoe 17",
+                    "nameEN": "CANoe 17"
+                },
+                {
+                    "id": "18",
+                    "nameCN": "CANoe 18",
+                    "nameEN": "CANoe 18"
+                },
+                {
                     "id": "19",
                     "nameCN": "CANoe 19",
                     "nameEN": "CANoe 19"
@@ -106,26 +135,10 @@
             "required": true
         },
         {
-            "id": "CANOE_SOFTWARE_POSITION",
-            "nameCN": "CANoe 可执行文件",
-            "nameEN": "CANoe Executable",
-            "type": "string_url_file",
-            "fileExtension": ".exe",
-            "required": true
-        },
-        {
             "id": "CANOE_PROJECT_DIR",
             "nameCN": "任务工作区根目录",
             "nameEN": "Task Workspace Root",
             "type": "string_url_dir",
-            "required": false
-        },
-        {
-            "id": "CANOE_REPORT_VIEWER_CLI",
-            "nameCN": "CANoe 报告查看器命令行工具",
-            "nameEN": "CANoe Report Viewer CLI",
-            "type": "string_url_file",
-            "fileExtension": ".exe",
             "required": false
         },
         {

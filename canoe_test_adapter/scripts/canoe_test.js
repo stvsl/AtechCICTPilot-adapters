@@ -4,10 +4,12 @@ import * as task from "@atech/task";
 
 import {
     configureNativeReport,
+    isTransientReportViewerFailure,
+    nativeReportFormat,
     waitForNativeReportOutputs
 } from "./canoe_test/report_automation.js";
 import {
-    decodeCliText,
+    cliResultText,
     isNativeReportUri,
     nativeVtestReportArtifactPath,
     ReportFileTracker
@@ -22,23 +24,25 @@ const DEFAULT_TEST_CONFIGURATION = "CICT Test Configuration";
 const DEFAULT_TEST_TIMEOUT_MS = 1800000;
 const CANOE_AUTOMATION_READY_TIMEOUT_MS = 120000;
 const CANOE_MEASUREMENT_STOP_TIMEOUT_MS = 120000;
+const CANOE_SABCMD_ID = "CANOE_SABCMD";
+const CANOE_REPORT_VIEWER_ID = "CANOE_REPORT_VIEWER";
 const CANOE_CONFIGURATION_READY_TIMEOUT_MS = 120000;
 const CANOE_TEST_SETUP_READY_TIMEOUT_MS = 120000;
 const CANOE_MEASUREMENT_START_TIMEOUT_MS = 120000;
 const CANOE_POLL_INTERVAL_MS = 250;
 const CANOE_REPORT_GENERATION_TIMEOUT_MS = 120000;
 const CANOE_REPORT_CONVERSION_TIMEOUT_MS = 120000;
+const CANOE_REPORT_CONVERSION_RETRY_INTERVAL_MS = 1000;
 const CANOE_REPORT_STABLE_OBSERVATIONS = 3;
-const CANOE_REPORT_FORMAT_VTESTREPORT = 1;
-const CANOE_REPORT_FORMAT_XML = 2;
-
 const REPORT_TYPE_VTESTREPORT = "vtestreport";
 const REPORT_TYPE_XML = "XML";
+const REPORT_TYPE_HTML = "HTML";
 const REPORT_TYPE_PDF = "PDF";
 // 必须与 PackageInfo.json 中 CANOE_REPORT_TYPE.values 的 ID 及顺序一致。
 const SUPPORTED_REPORT_TYPES = [
     REPORT_TYPE_VTESTREPORT,
     REPORT_TYPE_XML,
+    REPORT_TYPE_HTML,
     REPORT_TYPE_PDF
 ];
 
@@ -67,6 +71,7 @@ let expectedResultCount = 0;
 let useProjectTestSetup = false;
 let projectTestSetupReady = false;
 let selectedTestCases = [];
+let resolvedReportViewerExecutable = "";
 
 function debug(message) {
     task.info(`[CANoe debug] ${message}`);
@@ -340,19 +345,8 @@ function reportsDirectoryUri() {
     return `${projectRootUri}/reports`;
 }
 
-function reportNeedsVtestReport() {
-    return reportTypes.includes(REPORT_TYPE_VTESTREPORT)
-        || reportTypes.includes(REPORT_TYPE_PDF)
-        || (reportTypes.includes(REPORT_TYPE_XML) && reportTypes.length > 1);
-}
-
 function nativeReportRequested() {
     return reportTypes.length > 0;
-}
-
-function nativeReportFormat() {
-    return reportNeedsVtestReport()
-        ? CANOE_REPORT_FORMAT_VTESTREPORT : CANOE_REPORT_FORMAT_XML;
 }
 
 function reportFileSnapshot(uris = null) {
@@ -660,54 +654,121 @@ function addGeneratedReport(type, uri) {
 }
 
 function reportViewerExecutable() {
-    const executable = optionalDevice("CANOE_REPORT_VIEWER_CLI");
-    if (executable === undefined || executable === null
-            || String(executable).trim() === "") {
-        throw new Error(
-            "CANOE_REPORT_VIEWER_CLI must be configured for the selected CANoe report export");
+    if (resolvedReportViewerExecutable === "") {
+        resolvedReportViewerExecutable = cli.resolveExecutable(
+            CANOE_REPORT_VIEWER_ID);
+        task.info(`Resolved CANoe ${canoe.version} Report Viewer executable: `
+            + resolvedReportViewerExecutable);
     }
-    return String(executable);
+    return resolvedReportViewerExecutable;
+}
+
+function parentNativePath(path) {
+    const normalized = String(path === undefined || path === null ? "" : path)
+        .trim().replace(/\\/g, "/").replace(/\/+$/, "");
+    const separator = normalized.lastIndexOf("/");
+    return separator > 0 ? normalized.substring(0, separator) : "";
+}
+
+function canoeExecutableDirectory() {
+    const executable = canoe.installedExecutable();
+    const directory = parentNativePath(executable);
+    if (directory === "") {
+        throw new Error(
+            `CANoe ${canoe.version} executable path is invalid: ${executable}`);
+    }
+    return directory;
+}
+
+function sabCommandExecutable() {
+    return cli.resolveExecutable(CANOE_SABCMD_ID);
+}
+
+function onePageStylesheetPath() {
+    return `${canoeExecutableDirectory()}/Report/onepage.xslt`;
+}
+
+function nativeFileUri(path) {
+    const normalized = String(path).trim().replace(/\\/g, "/");
+    if (/^[A-Za-z]:\//.test(normalized)) {
+        return `file:///${normalized}`;
+    }
+    if (normalized.startsWith("//")) {
+        return `file:${normalized}`;
+    }
+    return normalized.startsWith("/")
+        ? `file://${normalized}` : `file:///${normalized}`;
 }
 
 
 function reportViewerFailure(result, type, nativeReportPath) {
-    const details = [result.standardError, result.standardOutput]
-        .map(decodeCliText)
-        .filter((value) => value !== "")
-        .join("; ");
+    const details = cliResultText(result);
     const suffix = details === "" ? "" : `: ${details}`;
     return `CANoe Report Viewer failed to create ${type} from "${nativeReportPath}" `
         + `(exit code ${result.exitCode})${suffix}`;
 }
 
-function runReportViewer(nativeReportUri, option, outputUri, type, executable) {
+async function runReportViewer(nativeReportUri, option, outputUri, type,
+                               executable) {
     const nativeReportPath = fs.nativePath(nativeReportUri);
     if (!fs.exists(nativeReportUri)) {
         throw new Error(`CANoe Report Viewer source report is missing: ${nativeReportPath}`);
     }
-    if (fs.exists(outputUri)) {
-        // 输出文件由本次转换独占，避免把上一次执行遗留的文件误判为新结果。
-        fs.remove(outputUri);
-    }
-    const result = cli.run({
-        executable,
-        arguments: [
-            `-r=${nativeReportPath}`,
-            `${option}=${fs.nativePath(outputUri)}`
-        ],
-        workingDirectoryUri: projectRootUri,
-        timeoutMs: canoeTimeout("ReportConversionTimeoutMs",
-                                CANOE_REPORT_CONVERSION_TIMEOUT_MS)
-    });
-    if (result.crashed || result.exitCode !== 0) {
-        throw new Error(reportViewerFailure(result, type, nativeReportPath));
-    }
-    if (!fs.exists(outputUri)) {
-        throw new Error(`CANoe Report Viewer did not create the requested ${type} report`);
+    const timeoutMs = canoeTimeout("ReportConversionTimeoutMs",
+                                   CANOE_REPORT_CONVERSION_TIMEOUT_MS);
+    const startedAt = Date.now();
+    let attempt = 0;
+    let lastFailure = "";
+    while (true) {
+        task.checkCancelled();
+        const elapsed = Math.max(0, Date.now() - startedAt);
+        if (attempt > 0 && elapsed >= timeoutMs) {
+            throw new Error(lastFailure);
+        }
+        if (fs.exists(outputUri)) {
+            // 每次尝试都清理目标，避免把失败尝试留下的文件误判为成功结果。
+            fs.remove(outputUri);
+        }
+        ++attempt;
+        const remaining = timeoutMs - elapsed;
+        const result = cli.run({
+            executable,
+            arguments: [
+                `-r=${nativeReportPath}`,
+                `${option}=${fs.nativePath(outputUri)}`
+            ],
+            workingDirectoryUri: projectRootUri,
+            timeoutMs: remaining
+        });
+        if (!result.crashed && result.exitCode === 0) {
+            if (!fs.exists(outputUri)) {
+                throw new Error(
+                    `CANoe Report Viewer did not create the requested ${type} report`);
+            }
+            if (attempt > 1) {
+                task.info(`CANoe Report Viewer created ${type} after ${attempt} attempts`);
+            }
+            return;
+        }
+
+        const failure = reportViewerFailure(result, type, nativeReportPath);
+        lastFailure = failure;
+        if (fs.exists(outputUri)) {
+            // 失败尝试可能留下不完整文件，立即清理，避免污染后续产物收集。
+            fs.remove(outputUri);
+        }
+        const retryRemaining = timeoutMs - Math.max(0, Date.now() - startedAt);
+        if (!isTransientReportViewerFailure(result) || retryRemaining <= 1) {
+            throw new Error(failure);
+        }
+        debug(`Report Viewer attempt ${attempt} is not ready; retrying ${type}: `
+            + failure);
+        await wait.delay(Math.min(CANOE_REPORT_CONVERSION_RETRY_INTERVAL_MS,
+                                  retryRemaining - 1));
     }
 }
 
-function reportOutputUri(type, index, total) {
+export function reportOutputUri(type, index, total) {
     const suffix = total === 1 ? "" : `-${index + 1}`;
     return `${reportsDirectoryUri()}/canoe-test${suffix}.${type.toLowerCase()}`;
 }
@@ -731,25 +792,102 @@ function viewerInputUris(nativeReportUris) {
     return vtestReports.length > 0 ? vtestReports : nativeReportUris;
 }
 
-function convertNativeReports(nativeReportUris, type, option) {
-    if (!reportTypes.includes(type) || nativeReportUris.length === 0) {
-        return;
+async function convertNativeReports(nativeReportUris, type, option,
+                                    registerOutputs = true) {
+    const requested = reportTypes.includes(type)
+        || (type === REPORT_TYPE_XML
+            && reportTypes.includes(REPORT_TYPE_HTML));
+    if (!requested || nativeReportUris.length === 0) {
+        return [];
     }
     let executable;
     try {
         executable = reportViewerExecutable();
     } catch (error) {
         addReportError(errorMessage(error));
-        return;
+        return [];
     }
     const inputs = viewerInputUris(nativeReportUris);
+    const outputs = [];
     fs.mkdir(reportsDirectoryUri());
     for (let index = 0; index < inputs.length; ++index) {
         task.checkCancelled();
         const outputUri = reportOutputUri(type, index, inputs.length);
         try {
-            runReportViewer(inputs[index], option, outputUri, type, executable);
-            addGeneratedReport(type, outputUri);
+            await runReportViewer(inputs[index], option, outputUri, type,
+                                  executable);
+            outputs.push(outputUri);
+            if (registerOutputs) {
+                addGeneratedReport(type, outputUri);
+            }
+        } catch (error) {
+            if (task.isCancelled()) {
+                throw error;
+            }
+            addReportError(errorMessage(error));
+            task.warning(errorMessage(error));
+        }
+    }
+    return outputs;
+}
+
+function sabCommandFailure(result, xmlPath) {
+    const details = cliResultText(result);
+    const suffix = details === "" ? "" : `: ${details}`;
+    return `CANoe sabcmd failed to create HTML from "${xmlPath}" `
+        + `(exit code ${result.exitCode})${suffix}`;
+}
+
+function runHtmlTransform(xmlUri, outputUri, executable, stylesheet) {
+    const xmlPath = fs.nativePath(xmlUri);
+    if (!fs.exists(xmlUri)) {
+        throw new Error(`CANoe HTML source report is missing: ${xmlPath}`);
+    }
+    if (fs.exists(outputUri)) {
+        // 输出文件由本次转换独占，避免发布上一次执行遗留的 HTML。
+        fs.remove(outputUri);
+    }
+    const result = cli.run({
+        executable,
+        arguments: [
+            nativeFileUri(stylesheet),
+            nativeFileUri(xmlPath),
+            nativeFileUri(fs.nativePath(outputUri))
+        ],
+        workingDirectoryUri: projectRootUri,
+        timeoutMs: canoeTimeout("ReportConversionTimeoutMs",
+                                CANOE_REPORT_CONVERSION_TIMEOUT_MS)
+    });
+    if (result.crashed || result.exitCode !== 0) {
+        throw new Error(sabCommandFailure(result, xmlPath));
+    }
+    if (!fs.exists(outputUri)) {
+        throw new Error("CANoe sabcmd did not create the requested HTML report");
+    }
+}
+
+function convertXmlReportsToHtml(xmlReportUris) {
+    if (!reportTypes.includes(REPORT_TYPE_HTML) || xmlReportUris.length === 0) {
+        return;
+    }
+    let executable;
+    let stylesheet;
+    try {
+        executable = sabCommandExecutable();
+        stylesheet = onePageStylesheetPath();
+    } catch (error) {
+        addReportError(errorMessage(error));
+        return;
+    }
+    fs.mkdir(reportsDirectoryUri());
+    for (let index = 0; index < xmlReportUris.length; ++index) {
+        task.checkCancelled();
+        const outputUri = reportOutputUri(
+            REPORT_TYPE_HTML, index, xmlReportUris.length);
+        try {
+            runHtmlTransform(xmlReportUris[index], outputUri,
+                             executable, stylesheet);
+            addGeneratedReport(REPORT_TYPE_HTML, outputUri);
         } catch (error) {
             if (task.isCancelled()) {
                 throw error;
@@ -784,11 +922,19 @@ async function generateSelectedReports() {
                 uri.toLowerCase().endsWith(".vtestreport"))) {
         addReportError("CANoe did not generate the requested vtestreport output");
     }
-    if (reportTypes.includes(REPORT_TYPE_XML)
-            && !nativeReportUris.some((uri) => uri.toLowerCase().endsWith(".xml"))) {
-        convertNativeReports(nativeReportUris, REPORT_TYPE_XML, "-e");
+    let xmlReportUris = nativeReportUris.filter((uri) =>
+        uri.toLowerCase().endsWith(".xml"));
+    const xmlRequired = reportTypes.includes(REPORT_TYPE_XML)
+        || reportTypes.includes(REPORT_TYPE_HTML);
+    if (xmlRequired && xmlReportUris.length === 0) {
+        xmlReportUris = await convertNativeReports(
+            nativeReportUris,
+            REPORT_TYPE_XML,
+            "-e",
+            reportTypes.includes(REPORT_TYPE_XML));
     }
-    convertNativeReports(nativeReportUris, REPORT_TYPE_PDF, "-p");
+    convertXmlReportsToHtml(xmlReportUris);
+    await convertNativeReports(nativeReportUris, REPORT_TYPE_PDF, "-p");
 }
 
 function elementsFor(object) {
@@ -1207,8 +1353,8 @@ export async function launch() {
         });
         return;
     }
-    const executable = task.device("CANOE_SOFTWARE_POSITION");
-    debug(`launch: starting configured CANoe executable: ${executable}`);
+    const executable = canoe.installedExecutable();
+    debug(`launch: starting discovered CANoe ${canoe.version} executable: ${executable}`);
     debug(`launch: project configuration will be opened during configure: ${configurationUri}`);
     await canoe.launch({
         attachExisting: false,
@@ -1263,7 +1409,7 @@ export async function configure() {
         mode: testMode,
         requested: nativeReportRequested(),
         testConfigurationReport,
-        format: nativeReportFormat(),
+        format: nativeReportFormat(reportTypes),
         abortOnError: throwIfAutomationDisconnected
     });
     const reportFileBaseline = reportFileSnapshot();
@@ -1344,14 +1490,22 @@ export async function execute() {
     task.progress(95);
 }
 
-function reportMediaType(type) {
+export function reportMediaType(type) {
     if (type === REPORT_TYPE_XML) {
         return "application/xml";
+    }
+    if (type === REPORT_TYPE_HTML) {
+        return "text/html";
     }
     if (type === REPORT_TYPE_PDF) {
         return "application/pdf";
     }
     return "application/octet-stream";
+}
+
+export function reportPublicationId(type, count) {
+    return count === 1
+        ? `CANOE_REPORT:${type}` : `CANOE_REPORT:${type}:${count}`;
 }
 
 function publishArtifact(source, relative, publicationId, mediaType) {
@@ -1380,9 +1534,7 @@ function publishSelectedReports() {
                 : sourceRelative;
             const count = (typeCounts[report.type] || 0) + 1;
             typeCounts[report.type] = count;
-            const publicationId = count === 1
-                ? `CANOE_REPORT:${report.type}`
-                : `CANOE_REPORT:${report.type}:${count}`;
+            const publicationId = reportPublicationId(report.type, count);
             publishArtifact(report.uri, relative, publicationId,
                             reportMediaType(report.type));
             publishedReportPaths.push(relative);

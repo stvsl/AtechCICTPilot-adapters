@@ -6,7 +6,8 @@ import * as task from "@atech/task";
 import {Poller, errorMessage} from "./poller.js";
 
 const CANOE_PROG_ID = "CANoe.Application";
-const SUPPORTED_CANOE_VERSIONS = ["19", "20"];
+const CANOE_EXECUTABLE_ID = "CANOE_EXECUTABLE";
+const SUPPORTED_CANOE_VERSIONS = ["17", "18", "19", "20"];
 const DEFAULT_TIMEOUT_MS = 120000;
 const CANOE_CLASS_FACTORY_GRACE_MS = 5000;
 const CANOE_NOT_READY_CODE = "CANOE_NOT_READY";
@@ -17,7 +18,8 @@ function normalizeCanoeVersion(value) {
     const version = String(value === undefined || value === null ? "" : value).trim();
     if (!SUPPORTED_CANOE_VERSIONS.includes(version)) {
         throw new Error(
-            `Unsupported CANoe version "${version}"; expected 19 or 20`);
+            `Unsupported CANoe version "${version}"; expected one of `
+            + SUPPORTED_CANOE_VERSIONS.join(", "));
     }
     return version;
 }
@@ -102,7 +104,8 @@ function isTransientComFailure(error) {
 }
 
 function isTransientActivationFailure(error) {
-    return isTransientComFailure(error) || isAutomationDisconnectFailure(error)
+    return (error && error.code === CANOE_INSTANCE_MISMATCH_CODE)
+        || isTransientComFailure(error) || isAutomationDisconnectFailure(error)
         || /0x80080005|server execution failed|服务器运行失败/i
             .test(errorMessage(error));
 }
@@ -162,6 +165,10 @@ export class CanoeSession {
         this.measurementRunning = false;
         this.executable = "";
         this.launchedAt = 0;
+    }
+
+    installedExecutable() {
+        return cli.resolveExecutable(CANOE_EXECUTABLE_ID);
     }
 
     async clearExisting(timeoutMs = DEFAULT_TIMEOUT_MS) {
@@ -281,6 +288,36 @@ export class CanoeSession {
             release(version);
         }
 
+        let fullName = "";
+        let applicationPath = "";
+        if (this.executable !== "") {
+            try {
+                fullName = application.get("FullName");
+                applicationPath = application.get("Path");
+            } catch (error) {
+                throw contextualError(
+                    "Unable to identify the started CANoe Automation executable", error);
+            }
+
+            const expected = normalizeNativePath(this.executable);
+            const actualFullName = normalizeNativePath(fullName);
+            const actualPath = normalizeNativePath(applicationPath);
+            const matches = actualFullName !== ""
+                ? actualFullName === expected
+                : actualPath === expected || actualPath === parentNativePath(expected);
+            const actual = String(fullName || applicationPath || "").trim();
+            if (!matches) {
+                const versionDetail = applicationVersion
+                    ? `, version=${applicationVersion}` : "";
+                const error = new Error(
+                    `CANoe Automation instance mismatch: configured executable="${this.executable}", `
+                    + `connected executable="${actual || "unknown"}"${versionDetail}`);
+                error.code = CANOE_INSTANCE_MISMATCH_CODE;
+                error.canoeFatal = true;
+                throw error;
+            }
+        }
+
         const actualMajorVersion = applicationVersion.split(".")[0];
         if (actualMajorVersion !== this.version) {
             const error = new Error(
@@ -296,34 +333,7 @@ export class CanoeSession {
             return {fullName: "", path: "", version: applicationVersion};
         }
 
-        let fullName;
-        let applicationPath;
-        try {
-            fullName = application.get("FullName");
-            applicationPath = application.get("Path");
-        } catch (error) {
-            throw contextualError(
-                "Unable to identify the started CANoe Automation executable", error);
-        }
-
-        const expected = normalizeNativePath(this.executable);
-        const actualFullName = normalizeNativePath(fullName);
-        const actualPath = normalizeNativePath(applicationPath);
-        const matches = actualFullName !== ""
-            ? actualFullName === expected
-            : actualPath === expected || actualPath === parentNativePath(expected);
         const actual = String(fullName || applicationPath || "").trim();
-        if (!matches) {
-            const versionDetail = applicationVersion
-                ? `, version=${applicationVersion}` : "";
-            const error = new Error(
-                `CANoe Automation instance mismatch: configured executable="${this.executable}", `
-                + `connected executable="${actual || "unknown"}"${versionDetail}`);
-            error.code = CANOE_INSTANCE_MISMATCH_CODE;
-            error.canoeFatal = true;
-            throw error;
-        }
-
         this.debug(`connect: verified CANoe Automation executable=${actual}`
             + (applicationVersion ? `, version=${applicationVersion}` : ""));
         return {
@@ -384,6 +394,9 @@ export class CanoeSession {
             } catch (error) {
                 release(candidate);
                 this.ensureLaunchedProcessRunning();
+                if (error && error.code === CANOE_INSTANCE_MISMATCH_CODE) {
+                    error.canoeFatal = false;
+                }
                 throw error;
             }
         }, {

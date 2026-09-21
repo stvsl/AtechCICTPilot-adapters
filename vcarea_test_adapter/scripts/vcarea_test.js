@@ -11,6 +11,9 @@ import {
 // VCarEA 测试适配器入口：启动 VCarEA 宿主，并通过 Connector SDK 查询
 // 宿主已创建的 MQTT 连接服务配置（与适配器 docs/main.py 使用同一只读接口）。
 // 导出名称必须与 StepConfig.groovy 中的 runjs 配置保持一致。
+// 未来的测试执行阶段可从 task.requirement("TEST_CASE_IDS") 和
+// task.requirement("VCAR_EA_REPORT_TYPE") 读取清单声明的输入快照；
+// 当前阶段不消费这些输入，也不生成测试报告。
 
 /** Connector SDK 中的只读客户端类型。 */
 const SDK_CLIENT_TYPE = "KY.VCar.Central.Connector.Sdk.ConnectorServiceClient";
