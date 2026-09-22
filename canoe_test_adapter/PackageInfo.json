@@ -10,6 +10,18 @@
     "NodeType": "Test",
     "CapabilityNameCN": "CANoe 测试",
     "CapabilityNameEN": "CANoe Test",
+    "PlatformEngineeringInfo": [
+        {
+            "EngineeringPackageId": "CANOE_TEST_PACKAGE_TEST_MODEL",
+            "EngineeringPackageNameCN": "CANoE Test Model 工程",
+            "EngineeringPackageNameEN": "CANoE Test Model Package"
+        },
+        {
+            "EngineeringPackageId": "CANOE_TEST_PACKAGE_TEST_UNIT",
+            "EngineeringPackageNameCN": "CANoE Test Unit 工程",
+            "EngineeringPackageNameEN": "CANoE Test Unit Package"
+        }
+    ],
     "Runtime": {
         "ApiVersion": "1.0",
         "Language": "javascript"
@@ -64,15 +76,26 @@
             "nameEN": "CANoe Project File",
             "type": "file",
             "fileExtension": ".zip",
-            "required": true
+            "required": true,
+            "platform": {
+                "type": "EngineeringPackage",
+                "tags": [
+                    "CANOE_TEST_PACKAGE_TEST_MODEL",
+                    "CANOE_TEST_PACKAGE_TEST_UNIT"
+                ]
+            }
         },
         {
             "id": "TEST_CASE_IDS",
-            "nameCN": "测试用例 ID（文本或 JSON 文件，可选）",
-            "nameEN": "Test Case IDs (text or JSON file, optional)",
+            "nameCN": "测试用例",
+            "nameEN": "Test Case",
             "type": "text_file",
             "fileExtension": ".json|.txt",
-            "required": false
+            "required": false,
+            "platform": {
+                "type": "CaseSelection",
+                "tags": []
+            }
         },
         {
             "id": "CANOE_REPORT_TYPE",
@@ -101,7 +124,11 @@
                     "nameEN": "CANoe Report Viewer PDF Report"
                 }
             ],
-            "required": true
+            "required": true,
+            "platform": {
+                "type": "Original",
+                "tags": []
+            }
         }
     ],
     "OnDeviceProperty": [

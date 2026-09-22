@@ -83,7 +83,9 @@
             "required": false,
             "platform": {
                 "type": "ParameterConfig",
-                "tags": []
+                "tags": [
+                    "_CANOE_PROJECT(./parameter.json)"
+                ]
             }
         }
     ],

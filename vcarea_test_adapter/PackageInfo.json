@@ -10,6 +10,13 @@
     "NodeType": "Test",
     "CapabilityNameCN": "VCarEA 测试",
     "CapabilityNameEN": "VCarEA Test",
+    "PlatformEngineeringInfo": [
+        {
+            "EngineeringPackageId": "VCAR_EA_TEST_PACKAGE",
+            "EngineeringPackageNameCN": "VCarEA 测试工程",
+            "EngineeringPackageNameEN": "VCarEA Test Package"
+        }
+    ],
     "Runtime": {
         "ApiVersion": "1.0",
         "Language": "javascript"
@@ -38,7 +45,13 @@
             "nameEN": "VCarEA Project",
             "type": "file",
             "fileExtension": ".zip",
-            "required": true
+            "required": true,
+            "platform": {
+                "type": "EngineeringPackage",
+                "tags": [
+                    "VCAR_EA_TEST_PACKAGE"
+                ]
+            }
         },
         {
             "id": "TEST_CASE_IDS",
@@ -46,7 +59,11 @@
             "nameEN": "Test Case IDs (text or JSON file, optional)",
             "type": "text_file",
             "fileExtension": ".json|.txt",
-            "required": false
+            "required": false,
+            "platform": {
+                "type": "CaseSelection",
+                "tags": []
+            }
         },
         {
             "id": "VCAR_EA_REPORT_TYPE",
@@ -70,7 +87,11 @@
                     "nameEN": "XLSX Report"
                 }
             ],
-            "required": true
+            "required": true,
+            "platform": {
+                "type": "Original",
+                "tags": []
+            }
         }
     ],
     "OnDeviceProperty": [
