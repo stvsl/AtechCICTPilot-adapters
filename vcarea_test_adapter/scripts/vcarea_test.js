@@ -1,111 +1,87 @@
-import * as cli from "@atech/cli";
-import * as dllnet from "@atech/dllnet";
 import * as fs from "@atech/fs";
 import * as task from "@atech/task";
 
 import {
-    describeInstallation,
-    resolveInstallation,
-} from "./vcarea/vcarea_utils.js";
+    cleanupConnector,
+    ensureVcareaProcessRunning,
+    launchVcarea,
+    readConnectorMqttConfiguration,
+} from "./vcarea/connector.js";
+import {
+    TOPICS,
+    cleanupTimeout,
+    configureBroker,
+    disconnect,
+    executionTimeout,
+    initializeProtocol,
+    isConnected,
+    receiveMessage,
+    registerAccess,
+    reportEventCount,
+    reportEventsSince,
+    request,
+    resetProtocol,
+    routeProtocolMessage,
+    waitForEaReady,
+} from "./vcarea/protocol.js";
+import { downloadReport } from "./vcarea/report.js";
 
-// VCarEA 测试适配器入口：启动 VCarEA 宿主，并通过 Connector SDK 查询
-// 宿主已创建的 MQTT 连接服务配置（与适配器 docs/main.py 使用同一只读接口）。
-// 导出名称必须与 StepConfig.groovy 中的 runjs 配置保持一致。
-// 未来的测试执行阶段可从 task.requirement("TEST_CASE_IDS") 和
-// task.requirement("VCAR_EA_REPORT_TYPE") 读取清单声明的输入快照；
-// 当前阶段不消费这些输入，也不生成测试报告。
+// 导出名称与阶段切分保持和 CANoe 测试适配器一致：prepare、launch、
+// readMqttConfig、connect、configure、startMeasurement、execute、
+// collectArtifacts、cleanup。
 
-/** Connector SDK 中的只读客户端类型。 */
-const SDK_CLIENT_TYPE = "KY.VCar.Central.Connector.Sdk.ConnectorServiceClient";
+const PROJECT_ROOT_URI = "workspace://vcarea-test/project";
+const RESULT_ARTIFACT_URI = "artifact://vcarea-test/execution-result.json";
+const SUPPORTED_REPORT_TYPES = ["html", "pdf", "xlsx", "zip"];
 
-/** 连接服务唯一标识的默认值；执行器服务使用 VCarEA.Executor。 */
-const DEFAULT_CONNECTION_KEY = "VCarEA";
-const SUPPORTED_CONNECTION_KEYS = ["VCarEA", "VCarEA.Executor"];
+// TODO: 接口文档没有规定启动实验环境后的稳定时间和报告事件收尾时间，
+// 暂分别等待 1000 ms 和 500 ms，可通过节点选项覆盖。
+const DEFAULT_ENVIRONMENT_SETTLE_MS = 1000;
+const DEFAULT_REPORT_EVENT_SETTLE_MS = 500;
 
-// 探测用于判断服务是否就绪：服务未运行时 SDK 会快速失败，而宿主启动过渡
-// 期间的连接调用可能长时间阻塞，因此超时取 broker 默认值 30 秒，
-// 避免把一次慢握手误判为服务不可用。
-const CONNECT_PROBE_TIMEOUT_MS = 30000;
-const CONNECT_QUERY_TIMEOUT_MS = 15000;
-const QUERY_TIMEOUT_MS = 20000;
+let sourceProjectUri = "";
+let projectRootUri = "";
+let projectFileUri = "";
+let projectPath = "";
+let configuredWorkDirectory = "";
+let deviceConfigurationPath = "";
+let projectOpened = false;
+let environmentStarted = false;
+let activeCasePath = "";
+let activeCaseMayBeOpen = false;
+let testConfigurationPath = "";
+let testbenchConfigurationPath = "";
+let requestedCases = [];
+let selectedCases = [];
+let reportTypes = [];
+let executionResults = [];
+let reportDownloads = [];
+let collectionErrors = [];
 
-// 启动后等待宿主连接服务就绪的上限，受阶段 timeout 二次约束。
-const READINESS_TIMEOUT_MS = 120000;
-const READINESS_POLL_MS = 1000;
-// 等待期间每隔多少次探测输出一次进度日志，避免长时间无输出被误认为卡死。
-const READINESS_REPORT_ATTEMPTS = 10;
-
-// 运行时在 dllnet worker 崩溃后重建会话时返回的错误标识；旧程序集/对象
-// 句柄随之全部失效，需要重新加载 Connector SDK 才能继续调用。
-const SESSION_RESET_MESSAGE = "DLL worker session was reset";
-const HANDLE_INVALID_MESSAGE = "Assembly handle is invalid";
-
-const WORKSPACE_CONFIG_URI = "workspace://vcarea/mqtt-config.json";
-const ARTIFACT_CONFIG_URI = "artifact://vcarea/mqtt-config.json";
-
-let installation = null;
-let processHandle = null;
-let processPid = 0;
-let processStartedByPlugin = false;
-let sdkAssembly = null;
-
-function describeError(error) {
-    if (error === null || error === undefined) {
-        return "未知错误";
+function optionInteger(name, fallback, minimum, maximum) {
+    const value = Number(task.option(name, fallback));
+    if (!Number.isInteger(value) || value < minimum || value > maximum) {
+        throw new Error(
+            `${name} 必须是 ${minimum} 到 ${maximum} 之间的整数`);
     }
-    const code = error.code === undefined ? "" : `[${error.code}] `;
-    const message = error.message === undefined ? String(error) : error.message;
-    // 运行时错误可能携带诊断细节（如 worker 退出码与 stderr）。
-    const details = error.details;
-    if (details === undefined || details === null) {
-        return `${code}${message}`;
-    }
-    let rendered = "";
-    try {
-        rendered = JSON.stringify(details);
-    } catch (_) {
-        rendered = String(details);
-    }
-    return rendered === "" || rendered === "{}"
-        ? `${code}${message}`
-        : `${code}${message}（${rendered}）`;
+    return value;
 }
 
-/** 判断错误是否表示 dllnet worker 会话已崩溃并重置（旧句柄全部失效）。 */
-function isSessionResetError(error) {
-    const text = describeError(error);
-    return text.includes(SESSION_RESET_MESSAGE)
-        || text.includes(HANDLE_INVALID_MESSAGE);
+function optionBoolean(name, fallback) {
+    const value = task.option(name, fallback);
+    if (typeof value === "boolean") {
+        return value;
+    }
+    const normalized = String(value).trim().toLowerCase();
+    if (normalized === "true") {
+        return true;
+    }
+    if (normalized === "false") {
+        return false;
+    }
+    throw new Error(`${name} 必须是 true 或 false`);
 }
 
-/** 丢弃当前 SDK 程序集句柄；下次调用时会在全新 worker 上重新加载。 */
-function dropSdkSession(reason) {
-    if (sdkAssembly === null) {
-        return;
-    }
-    task.warning(
-        `dllnet worker 会话已崩溃重置（${reason}），将在下次调用时重新加载 Connector SDK`);
-    try {
-        // 会话重置后旧句柄已失效，close 只是宿主侧清理，不会产生 worker 调用。
-        sdkAssembly.close();
-    } catch (_) {
-        // 句柄失效导致的释放失败可以安全忽略。
-    }
-    sdkAssembly = null;
-}
-
-function decodeText(bytes) {
-    if (bytes === undefined || bytes === null) {
-        return "";
-    }
-    try {
-        return new TextDecoder().decode(bytes).trim();
-    } catch (_) {
-        return "";
-    }
-}
-
-/** 读取可选的工位属性；未声明或未配置时返回空字符串。 */
 function optionalDevice(key) {
     try {
         const value = task.device(key);
@@ -115,344 +91,761 @@ function optionalDevice(key) {
     }
 }
 
-/** 解析当前节点的 VCarEA 安装布局，结果在节点生命周期内复用。 */
-function requireInstallation() {
-    if (installation === null) {
-        installation = resolveInstallation(optionalDevice("VCAR_EA_SOFTWARE_PATH"));
-        task.info(`VCarEA 安装布局：${describeInstallation(installation)}`);
-    }
-    return installation;
-}
-
-/** 读取需要查询的连接服务 key。 */
-function connectionKey() {
-    const configured = String(task.option("ConnectionKey", DEFAULT_CONNECTION_KEY))
-        .trim();
-    if (!SUPPORTED_CONNECTION_KEYS.includes(configured)) {
-        throw new Error(
-            `不支持的连接服务标识 [${configured}]，可选值：${SUPPORTED_CONNECTION_KEYS.join("、")}`);
-    }
-    return configured;
-}
-
-/** 加载 Connector SDK 程序集并在节点内复用。 */
-function loadSdkAssembly() {
-    if (sdkAssembly !== null) {
-        return sdkAssembly;
-    }
-    const target = requireInstallation();
-    task.info(`加载 Connector SDK：${target.ConnectorSdkPath}`);
+function optionalRequirement(key) {
     try {
-        sdkAssembly = dllnet.load(target.ConnectorSdkPath);
-    } catch (error) {
-        throw new Error(
-            `加载 Connector SDK 失败：${describeError(error)}；${describeInstallation(target)}`);
+        return task.requirement(key);
+    } catch (_) {
+        return "";
     }
-    return sdkAssembly;
 }
 
-/** 连接宿主的中心服务并返回客户端句柄。 */
-function connectClient(timeoutMs) {
-    const assembly = loadSdkAssembly();
-    const client = assembly.callObject(
-        `${SDK_CLIENT_TYPE}::Connect`, [null], {timeoutMs});
-    if (client === null || client === undefined) {
-        throw new Error("ConnectorServiceClient.Connect 未返回客户端实例");
+function optionalRequirementText(key) {
+    const value = optionalRequirement(key);
+    if (value === undefined || value === null || String(value).trim() === "") {
+        return "";
     }
-    return client;
+    try {
+        if (fs.exists(value)) {
+            return fs.readText(value);
+        }
+    } catch (_) {
+        // 插件调试时允许直接传入字面量，正式任务输入仍由清单快照为文件。
+    }
+    return String(value);
 }
 
-/** 释放客户端会话；句柄始终回收，SDK 会话仅在连接可用时释放。 */
-function closeClient(client, dispose = true) {
-    if (client === null || client === undefined) {
-        return;
+function baseName(path) {
+    const parts = String(path).replace(/\\/g, "/").split("/");
+    return parts[parts.length - 1];
+}
+
+function fileStem(path) {
+    return baseName(path).replace(/\.[^.]+$/, "");
+}
+
+function normalizedMatchPath(value) {
+    return String(value === undefined || value === null ? "" : value)
+        .trim().replace(/^file:\/\//i, "").replace(/\\/g, "/")
+        .replace(/^\.\//, "").replace(/\/+$/g, "").toLowerCase();
+}
+
+function isAbsoluteNativePath(value) {
+    const path = String(value || "");
+    return path.startsWith("/") || path.startsWith("\\\\")
+        || /^[A-Za-z]:[\\/]/.test(path);
+}
+
+function uniqueStrings(values) {
+    const result = [];
+    for (const value of values) {
+        if (!result.includes(value)) {
+            result.push(value);
+        }
     }
-    // 连接失败的客户端在 Dispose 时可能长时间阻塞，触发请求超时并终止 worker，
-    // 因此仅在调用成功后释放 SDK 会话；失败的会话只回收句柄。
-    if (dispose) {
+    return result;
+}
+
+function parseRequestedCases() {
+    const text = optionalRequirementText("TEST_CASE_IDS").trim();
+    if (text === "") {
+        return [];
+    }
+    if (text.startsWith("[") || text.startsWith("{")) {
+        let value;
         try {
-            client.call("Dispose");
+            value = JSON.parse(text);
         } catch (error) {
-            // 会话重置后旧句柄失效属预期情况，静默跳过避免恢复期刷告警。
-            if (!isSessionResetError(error)) {
-                task.warning(`释放连接客户端失败：${describeError(error)}`);
+            throw new Error(`TEST_CASE_IDS 不是有效 JSON：${error.message}`);
+        }
+        if (Array.isArray(value)) {
+            return uniqueStrings(value.map((item) => String(item).trim())
+                .filter((item) => item !== ""));
+        }
+        if (value !== null && typeof value === "object") {
+            for (const key of ["ids", "testCaseIds", "TestCaseIds", "cases"]) {
+                if (Array.isArray(value[key])) {
+                    return uniqueStrings(value[key]
+                        .map((item) => String(item).trim())
+                        .filter((item) => item !== ""));
+                }
             }
         }
+        throw new Error("TEST_CASE_IDS JSON 必须是数组或包含用例数组的对象");
     }
-    try {
-        client.close();
-    } catch (error) {
-        if (!isSessionResetError(error)) {
-            task.warning(`关闭连接客户端句柄失败：${describeError(error)}`);
+    return uniqueStrings(text.split(/[\r\n,;]+/)
+        .map((item) => item.trim()).filter((item) => item !== ""));
+}
+
+function parseReportTypes() {
+    const text = optionalRequirementText("VCAR_EA_REPORT_TYPE");
+    const selected = uniqueStrings(String(text).split(",")
+        .map((item) => item.trim().toLowerCase())
+        .filter((item) => item !== ""));
+    if (selected.length === 0) {
+        throw new Error("VCAR_EA_REPORT_TYPE 必须选择至少一种报告格式");
+    }
+    for (const type of selected) {
+        if (!SUPPORTED_REPORT_TYPES.includes(type)) {
+            throw new Error(
+                `不支持的 VCarEA 报告格式 [${type}]，可选值：`
+                + SUPPORTED_REPORT_TYPES.join("、"));
         }
     }
+    const legacyFormats = selected.filter((type) => type !== "zip");
+    if (legacyFormats.length > 0) {
+        task.warning(
+            `已保留旧版报告选项 ${legacyFormats.join("、")}，`
+            + "但 EA 外部调用接口当前仅能下载 ZIP；本次将发布原生 ZIP 报告");
+    }
+    return selected;
 }
 
-/** 探测中心服务是否可用；不可用时返回 false 并输出原因。 */
-function probeConnectionService(timeoutMs) {
-    let client = null;
-    let connected = false;
-    try {
-        client = connectClient(timeoutMs);
-        connected = true;
-        return true;
-    } catch (error) {
-        if (isSessionResetError(error)) {
-            dropSdkSession(describeError(error));
+function projectFiles(extension) {
+    const suffix = extension.toLowerCase();
+    return fs.list(projectRootUri, true).filter((entry) =>
+        entry.type === "file" && entry.name.toLowerCase().endsWith(suffix));
+}
+
+function requireSingleProjectFile() {
+    const projects = projectFiles(".hlt");
+    if (projects.length === 0) {
+        throw new Error("VCarEA 工程目录中未找到 .hlt 工程文件");
+    }
+    if (projects.length > 1) {
+        throw new Error(
+            `VCarEA 工程目录中存在 ${projects.length} 个 .hlt 文件，无法确定要执行的工程`);
+    }
+    return projects[0].uri;
+}
+
+function resetExecutionState() {
+    sourceProjectUri = "";
+    projectRootUri = "";
+    projectFileUri = "";
+    projectPath = "";
+    configuredWorkDirectory = "";
+    deviceConfigurationPath = "";
+    projectOpened = false;
+    environmentStarted = false;
+    activeCasePath = "";
+    activeCaseMayBeOpen = false;
+    testConfigurationPath = "";
+    testbenchConfigurationPath = "";
+    requestedCases = [];
+    selectedCases = [];
+    reportTypes = [];
+    executionResults = [];
+    reportDownloads = [];
+    collectionErrors = [];
+}
+
+function requirePrepared() {
+    if (projectPath === "" || projectRootUri === "") {
+        throw new Error("VCarEA 测试工程尚未准备");
+    }
+}
+
+function projectRelativePath(uri) {
+    const prefix = `${projectRootUri.replace(/\/$/, "")}/`;
+    return String(uri).startsWith(prefix)
+        ? String(uri).substring(prefix.length) : "";
+}
+
+function uriForAbsoluteInventoryPath(path) {
+    const root = normalizedMatchPath(fs.nativePath(projectRootUri));
+    const candidate = normalizedMatchPath(path);
+    if (candidate === root) {
+        return projectRootUri;
+    }
+    if (!candidate.startsWith(`${root}/`)) {
+        return "";
+    }
+    return `${projectRootUri}/${candidate.substring(root.length + 1)}`;
+}
+
+/** 将项目清单返回的相对或绝对路径解析到本次任务复制的工程目录。 */
+function resolveInventoryUri(path, extension) {
+    const raw = String(path || "").trim();
+    if (raw === "") {
+        throw new Error(`VCarEA 返回了空的 ${extension} 路径`);
+    }
+    if (isAbsoluteNativePath(raw)) {
+        const mapped = uriForAbsoluteInventoryPath(raw);
+        if (mapped !== "" && fs.exists(mapped)) {
+            return mapped;
         }
-        task.info(`连接服务暂不可用：${describeError(error)}`);
-        return false;
-    } finally {
-        closeClient(client, connected);
-    }
-}
-
-/** 探测宿主是否已创建指定 key 的连接服务。 */
-function probeConnectionServiceKey(key, timeoutMs) {
-    let client = null;
-    let connected = false;
-    try {
-        client = connectClient(timeoutMs);
-        const info = client.call("TryGetConnectionInfo", [key], {timeoutMs});
-        connected = true;
-        return info !== null;
-    } catch (error) {
-        if (isSessionResetError(error)) {
-            dropSdkSession(describeError(error));
+    } else {
+        const relative = raw.replace(/\\/g, "/").replace(/^\.\//, "")
+            .replace(/^\/+/, "");
+        const direct = `${projectRootUri}/${relative}`;
+        if (fs.exists(direct)) {
+            return direct;
         }
-        task.info(`连接服务 [${key}] 暂不可用：${describeError(error)}`);
-        return false;
-    } finally {
-        closeClient(client, connected);
     }
+
+    const target = normalizedMatchPath(raw);
+    const targetName = baseName(target);
+    const matches = projectFiles(extension).filter((entry) => {
+        const relative = normalizedMatchPath(projectRelativePath(entry.uri));
+        return relative === target || relative.endsWith(`/${target}`)
+            || target.endsWith(`/${relative}`) || baseName(relative) === targetName;
+    });
+    if (matches.length === 1) {
+        return matches[0].uri;
+    }
+    if (matches.length > 1) {
+        throw new Error(`项目路径 [${raw}] 匹配到多个本地文件`);
+    }
+    throw new Error(`无法在任务工程目录中解析 VCarEA 路径 [${raw}]`);
 }
 
-/** 连接服务缺失时的统一报错信息。 */
-function missingConnectionServiceError(key) {
-    return new Error(
-        `连接服务 [${key}] 尚未创建：请确认 VCarEA 宿主已通过 `
-        + "ReadOrCreateConnectorService 创建该 key");
+function inventoryPaths(entries, extension) {
+    const paths = [];
+    for (const entry of entries) {
+        if (!entry || typeof entry !== "object") {
+            continue;
+        }
+        const path = String(entry.Path || "").trim();
+        if (path === "" || !path.toLowerCase().endsWith(extension)) {
+            continue;
+        }
+        const uri = resolveInventoryUri(path, extension);
+        const nativePath = fs.nativePath(uri);
+        if (!paths.some((item) =>
+            normalizedMatchPath(item.NativePath) === normalizedMatchPath(nativePath))) {
+            paths.push({
+                Path: path,
+                Uri: uri,
+                NativePath: nativePath,
+                Name: baseName(path),
+            });
+        }
+    }
+    return paths;
 }
 
-/** 确认插件启动的 VCarEA 进程仍存活；异常退出时给出诊断。 */
-function ensureProcessRunning() {
-    if (processHandle === null || cli.isRunning(processHandle)) {
-        return;
-    }
-    const finished = cli.wait(processHandle);
-    cli.release(processHandle);
-    processHandle = null;
-    if (!finished.crashed && finished.exitCode === 0) {
-        // 单实例软件在已有实例时会直接正常退出，继续按已有实例等待服务。
-        task.warning("VCarEA 启动进程已退出（退出码 0），按已有实例继续等待连接服务");
-        return;
-    }
-    const stderr = decodeText(finished.standardError);
-    throw new Error(
-        `VCarEA 启动失败：退出码 ${finished.exitCode}`
-        + (stderr === "" ? "" : `，输出：${stderr}`));
+function localProjectPaths(extension) {
+    return projectFiles(extension).map((entry) => ({
+        Path: projectRelativePath(entry.uri),
+        Uri: entry.uri,
+        NativePath: fs.nativePath(entry.uri),
+        Name: entry.name,
+    }));
 }
 
-/** 轮询 Connector SDK，直到宿主连接服务就绪或超出等待上限。 */
-function waitForConnectionService(key) {
-    const startedAt = Date.now();
-    const deadline = startedAt + READINESS_TIMEOUT_MS;
-    let attempts = 0;
+function responseArray(response, field) {
+    const value = field === ""
+        ? response.Data : response.Data && response.Data[field];
+    return Array.isArray(value) ? value : [];
+}
+
+function chooseConfiguration(entries, extension, description) {
+    const paths = inventoryPaths(entries, extension);
+    const available = paths.length > 0 ? paths : localProjectPaths(extension);
+    if (available.length === 0) {
+        throw new Error(`VCarEA 工程缺少${description}（${extension}）`);
+    }
+    if (available.length > 1) {
+        // TODO: 接口文档未定义多份同类配置的选择规则，暂选择接口返回顺序中的第一份。
+        task.warning(
+            `发现 ${available.length} 份${description}，暂选择第一份：${available[0].Path}`);
+    }
+    return available[0];
+}
+
+function matchesCaseSelector(candidate, selector) {
+    // TODO: 文档的 Case 执行接口只接受路径，没有定义可用于筛选的 Case ID；
+    // 暂按相对路径、绝对路径、文件名或无扩展名文件名匹配任务输入。
+    const normalizedSelector = normalizedMatchPath(selector);
+    const relative = normalizedMatchPath(candidate.Path);
+    const native = normalizedMatchPath(candidate.NativePath);
+    const name = normalizedMatchPath(candidate.Name);
+    const stem = normalizedMatchPath(fileStem(candidate.Name));
+    return normalizedSelector === relative || normalizedSelector === native
+        || normalizedSelector === name || normalizedSelector === stem;
+}
+
+function selectCases(entries) {
+    const inventory = inventoryPaths(entries, ".case");
+    const available = inventory.length > 0
+        ? inventory : localProjectPaths(".case");
+    if (available.length === 0) {
+        throw new Error("VCarEA 工程中没有可执行的 Case");
+    }
+    if (requestedCases.length === 0) {
+        return available;
+    }
+    const selected = [];
+    for (const selector of requestedCases) {
+        const matches = available.filter((candidate) =>
+            matchesCaseSelector(candidate, selector));
+        if (matches.length === 0) {
+            throw new Error(`TEST_CASE_IDS 中的用例 [${selector}] 不在工程 Case 列表中`);
+        }
+        if (matches.length > 1) {
+            throw new Error(
+                `TEST_CASE_IDS 中的用例 [${selector}] 匹配多个 Case，请提供相对路径`);
+        }
+        if (!selected.some((candidate) =>
+            normalizedMatchPath(candidate.NativePath)
+                === normalizedMatchPath(matches[0].NativePath))) {
+            selected.push(matches[0]);
+        }
+    }
+    return selected;
+}
+
+function updateVariables() {
+    const value = task.option("UpdateVariables", null);
+    if (value === null || value === undefined || value === "") {
+        return null;
+    }
+    if (!Array.isArray(value)) {
+        throw new Error("UpdateVariables 必须是数组");
+    }
+    return value.map((entry, index) => {
+        if (entry === null || typeof entry !== "object"
+                || String(entry.VariableName || "").trim() === "") {
+            throw new Error(`UpdateVariables[${index}] 缺少 VariableName`);
+        }
+        const valueMode = Number(entry.ValueMode === undefined
+            ? 0 : entry.ValueMode);
+        if (valueMode !== 0 && valueMode !== 1) {
+            throw new Error(`UpdateVariables[${index}].ValueMode 只能是 0 或 1`);
+        }
+        return {
+            VariableName: String(entry.VariableName),
+            Value: entry.Value === undefined ? "" : entry.Value,
+            ValueMode: valueMode,
+        };
+    });
+}
+
+function drainReportEvents() {
+    const settleMs = optionInteger(
+        "ReportEventSettleMs", DEFAULT_REPORT_EVENT_SETTLE_MS, 0, 60000);
+    const deadline = Date.now() + settleMs;
     while (Date.now() < deadline) {
         task.checkCancelled();
-        ensureProcessRunning();
-        attempts += 1;
-        if (probeConnectionServiceKey(key, CONNECT_PROBE_TIMEOUT_MS)) {
-            task.info(`VCarEA 宿主连接服务 [${key}] 已就绪`);
-            return;
+        const message = receiveMessage(Math.max(1, Math.min(50, deadline - Date.now())));
+        if (message !== null && message !== undefined) {
+            routeProtocolMessage(message);
         }
-        // 周期性输出等待进度：中心服务冷启动可能延迟数十秒，期间还会有
-        // worker 会话崩溃重置的恢复日志，进度行能明确区分"仍在等待"与"卡死"。
-        if (attempts % READINESS_REPORT_ATTEMPTS === 0
-                && Date.now() < deadline) {
-            const waitedSeconds =
-                Math.round((Date.now() - startedAt) / 1000);
-            const limitSeconds = Math.round(READINESS_TIMEOUT_MS / 1000);
-            task.info(
-                `已等待宿主连接服务 [${key}] ${waitedSeconds} 秒`
-                + `（上限 ${limitSeconds} 秒），VCarEA 冷启动时中心服务可能延迟就绪`);
-        }
-        task.delay(READINESS_POLL_MS);
     }
-    throw new Error(
-        `等待 VCarEA 宿主连接服务 [${key}] 超时（${READINESS_TIMEOUT_MS} ms）：`
-        + `请确认 ${requireInstallation().CentralServicePath} 已在运行`);
 }
 
-function requireText(value, field) {
-    if (typeof value !== "string" || value.trim() === "") {
-        throw new Error(`连接服务返回的字段 ${field} 无效：${JSON.stringify(value)}`);
-    }
-    return value;
-}
-
-function requireInteger(value, field, minimum, maximum) {
+function numericFailureCount(value) {
     const number = Number(value);
-    if (!Number.isInteger(number) || number < minimum || number > maximum) {
-        throw new Error(`连接服务返回的字段 ${field} 无效：${JSON.stringify(value)}`);
-    }
-    return number;
+    return Number.isFinite(number) && number > 0 ? number : 0;
 }
 
-/** 把 ConnectorConnectionInfo 规范化为适配器内部的连接配置结构。 */
-function normalizeConnectionInfo(info, key) {
-    if (info === null || typeof info !== "object") {
-        throw new Error(
-            `连接服务 [${key}] 返回的连接信息不是对象：${JSON.stringify(info)}`);
+function evaluateCaseStatus(events) {
+    let observedVerdict = false;
+    let failed = false;
+    for (const event of events) {
+        const data = event && event.Data && typeof event.Data === "object"
+            ? event.Data : {};
+        if (event.Topic === "VCar/EA/TestReport/Step/Stop"
+                && typeof data.IsPass === "boolean") {
+            observedVerdict = true;
+            failed = failed || !data.IsPass;
+        }
+        if (event.Topic.endsWith("/Stop")) {
+            const counts = [
+                data.PlanFailCount,
+                data.CaseFailCount,
+                data.StepFailCount,
+            ];
+            if (counts.some((value) => numericFailureCount(value) > 0)) {
+                observedVerdict = true;
+                failed = true;
+            } else if (counts.some((value) => Number.isFinite(Number(value)))) {
+                observedVerdict = true;
+            }
+        }
     }
-    const host = requireText(info.Host, "Host");
-    const port = requireInteger(info.Port, "Port", 1, 65535);
+    if (failed) {
+        return "failed";
+    }
+    return observedVerdict ? "passed" : "completed";
+}
+
+function executionRequestData(casePath) {
+    // 文档明确 ProjectPath、TCF、TBF 三个路径仅 Linux 版本需要；当前清单
+    // 启动 Windows VCarEA，因此不向 Windows 服务发送这些可选字段。
     return {
-        Key: key,
-        ClientName: requireText(info.ClientName, "ClientName"),
-        Host: host,
-        Port: port,
-        UserName: typeof info.UserName === "string" ? info.UserName : "",
-        Password: typeof info.Password === "string" ? info.Password : "",
-        TimeoutSeconds:
-            requireInteger(info.TimeoutSeconds, "TimeoutSeconds", 0, 86400),
-        KeepAliveSeconds:
-            requireInteger(info.KeepAliveSeconds, "KeepAliveSeconds", 0, 86400),
-        ServerUri: `mqtt://${host}:${port}`,
+        OperationType: 0,
+        CasePath: casePath,
+        UpdateVariables: updateVariables(),
     };
 }
 
-/** 保存并发布连接配置，供后续阶段与产物收集使用。 */
-function persistConfiguration(configuration) {
-    const payload = `${JSON.stringify(configuration, null, 2)}\n`;
-    fs.writeText(WORKSPACE_CONFIG_URI, payload);
-    fs.writeText(ARTIFACT_CONFIG_URI, payload);
-    task.publish("MQTT_CONFIG",
-                 ARTIFACT_CONFIG_URI,
-                 "VCarEA MQTT 连接配置",
-                 "application/json");
-    task.info(`MQTT 连接配置已保存到 ${WORKSPACE_CONFIG_URI} 并发布为产物`);
+function stopActiveCase(timeoutMs) {
+    if (activeCasePath === "" || !isConnected()) {
+        return;
+    }
+    request(
+        TOPICS.caseExecuteRequest,
+        TOPICS.caseExecuteResponse,
+        {OperationType: 1, CasePath: activeCasePath},
+        timeoutMs);
 }
 
-/** 阶段 1：启动 VCarEA 宿主，并等待其连接服务就绪。 */
+function closeActiveCase(timeoutMs) {
+    if (!activeCaseMayBeOpen || activeCasePath === "" || !isConnected()) {
+        return;
+    }
+    request(
+        TOPICS.caseOperationRequest,
+        TOPICS.caseOperationResponse,
+        {OperationType: 1, CasePath: activeCasePath},
+        timeoutMs);
+    activeCaseMayBeOpen = false;
+    activeCasePath = "";
+}
+
+function addCollectionError(message) {
+    const text = String(message || "").trim();
+    if (text !== "" && !collectionErrors.includes(text)) {
+        collectionErrors.push(text);
+    }
+}
+
+function overallStatus() {
+    if (executionResults.some((result) => result.Status === "failed")) {
+        return "failed";
+    }
+    if (executionResults.length > 0
+            && executionResults.every((result) => result.Status === "passed")) {
+        return "passed";
+    }
+    return "completed";
+}
+
+function publishExecutionSummary() {
+    const summary = {
+        TaskId: task.id(),
+        ProjectPath: projectPath,
+        Configurations: {
+            TestConfigurationPath: testConfigurationPath,
+            TestbenchConfigurationPath: testbenchConfigurationPath,
+        },
+        LegacyDeviceProperties: {
+            WorkDirectory: configuredWorkDirectory,
+            DeviceConfigurationPath: deviceConfigurationPath,
+        },
+        RequestedCases: requestedCases,
+        ReportTypes: reportTypes,
+        NativeReportType: "zip",
+        Status: overallStatus(),
+        Cases: executionResults,
+        Reports: reportDownloads,
+        CollectionErrors: collectionErrors,
+    };
+    fs.writeText(RESULT_ARTIFACT_URI, `${JSON.stringify(summary, null, 2)}\n`);
+    task.publish(
+        "VCAREA_EXECUTION_RESULT",
+        RESULT_ARTIFACT_URI,
+        "VCarEA 执行结果",
+        "application/json");
+}
+
+/** 阶段 1：校验并解压工程包，解析用例选择及报告格式。 */
+export function prepare(projectPackage) {
+    resetExecutionState();
+    resetProtocol();
+    if (typeof projectPackage !== "string" || projectPackage.trim() === "") {
+        throw new Error("VCAR_EA_PROJECT 必须传入 VCarEA 工程 ZIP");
+    }
+    const source = projectPackage.trim();
+    if (!fs.exists(source)) {
+        throw new Error("VCAR_EA_PROJECT 指向的工程不存在");
+    }
+    sourceProjectUri = source;
+    projectRootUri = PROJECT_ROOT_URI;
+    if (fs.exists(projectRootUri)) {
+        fs.remove(projectRootUri, true);
+    }
+    const sourceType = fs.stat(sourceProjectUri).type;
+    if (sourceType === "file") {
+        fs.extractZip(sourceProjectUri, projectRootUri);
+    } else if (sourceType === "directory") {
+        // 正式清单输入为 ZIP；保留目录输入仅用于本地插件调试。
+        fs.copy(sourceProjectUri, projectRootUri);
+    } else {
+        throw new Error("VCAR_EA_PROJECT 必须指向 ZIP 文件或工程目录");
+    }
+    projectFileUri = requireSingleProjectFile();
+    projectPath = fs.nativePath(projectFileUri);
+    requestedCases = parseRequestedCases();
+    reportTypes = parseReportTypes();
+    configuredWorkDirectory = optionalDevice("VCAR_EA_WORK_DIR");
+    deviceConfigurationPath = optionalDevice("VCAR_EA_DEVICE_CONFIG_PATH");
+    if (configuredWorkDirectory !== "" || deviceConfigurationPath !== "") {
+        // EA 文档没有加载这两个旧版字段的接口，只记录而不改变测试配置。
+        task.info(
+            `已记录旧版工位属性：工作目录=${configuredWorkDirectory || "未配置"}；`
+            + `设备配置=${deviceConfigurationPath || "未配置"}`);
+    }
+    initializeProtocol();
+    task.info(
+        `VCarEA 工程已准备：${projectPath}；用例筛选 ${requestedCases.length} 项；`
+        + `报告格式 ${reportTypes.join("、")}`);
+    task.progress(5);
+}
+
+/** 阶段 2：按旧版流程探测 Connector 服务，必要时启动 VCarEA。 */
 export function launch() {
-    const target = requireInstallation();
-    const key = connectionKey();
-
-    if (probeConnectionService(CONNECT_PROBE_TIMEOUT_MS)) {
-        task.info("VCarEA 宿主连接服务已在运行，跳过启动");
-        if (!probeConnectionServiceKey(key, CONNECT_QUERY_TIMEOUT_MS)) {
-            throw missingConnectionServiceError(key);
-        }
-        task.progress(100);
-        return {Started: false, ExecutablePath: target.ExecutablePath};
-    }
-
-    task.info(`启动 VCarEA：${target.ExecutablePath}`);
-    let started = null;
-    try {
-        started = cli.start({
-            executable: target.ExecutablePath,
-            arguments: [],
-            // VCarEA 会在进程工作目录下创建 Logs 目录，使用节点临时目录避免污染工作区。
-            workingDirectoryUri: "temp://",
-        });
-    } catch (error) {
-        throw new Error(
-            `启动 VCarEA 失败：${describeError(error)}；${describeInstallation(target)}`);
-    }
-    processHandle = started.handle;
-    processPid = started.pid;
-    processStartedByPlugin = true;
-    task.info(`VCarEA 进程已启动（PID ${processPid}），等待宿主连接服务就绪`);
-
-    waitForConnectionService(key);
-    task.progress(100);
-    return {
-        Started: true,
-        Pid: processPid,
-        ExecutablePath: target.ExecutablePath,
-    };
+    requirePrepared();
+    const result = launchVcarea(optionBoolean("AttachExisting", false));
+    task.progress(15);
+    return result;
 }
 
-/** 阶段 2：通过 Connector SDK 查询宿主已创建的 MQTT 连接服务配置。 */
+/** 阶段 3：查询旧版 Connector 配置并交给新的 MQTT 执行流程。 */
 export function readMqttConfig() {
-    const key = connectionKey();
-    task.info(`查询连接服务 [${key}] 的 MQTT 连接配置`);
+    requirePrepared();
+    const configuration = readConnectorMqttConfiguration();
+    configureBroker(configuration);
+    task.progress(20);
+    return configuration;
+}
 
-    let client = null;
-    try {
-        client = connectClient(CONNECT_QUERY_TIMEOUT_MS);
-    } catch (error) {
-        // launch 与本阶段之间 worker 会话可能已崩溃；丢弃会话让重试重新加载。
-        if (isSessionResetError(error)) {
-            dropSdkSession(describeError(error));
-        }
-        throw new Error(
-            `连接中心服务失败：${describeError(error)}；`
-            + `请确认 ${requireInstallation().CentralServicePath} 已在运行`);
+/** 阶段 4：按文档连接 MQTT、Ping 等待 EA 就绪并登记 API 客户端。 */
+export function connect() {
+    requirePrepared();
+    waitForEaReady(ensureVcareaProcessRunning);
+    registerAccess();
+    task.progress(25);
+}
+
+/** 阶段 5：打开工程，查询并配置 TCF/TBF，然后确定待执行 Case。 */
+export function configure() {
+    requirePrepared();
+    if (!isConnected()) {
+        throw new Error("配置工程前必须先连接 VCarEA MQTT 服务");
     }
+    // 请求超时时无法确认 EA 是否已经打开工程，因此发送前就进入待清理状态。
+    projectOpened = true;
+    const opened = request(
+        TOPICS.projectRequest,
+        TOPICS.projectResponse,
+        {
+            OperationType: 0,
+            ProjectPath: projectPath,
+            ConstaraintUpdate: optionBoolean("ConstraintUpdate", true),
+        });
+    const configurationsResponse = request(
+        TOPICS.configurationsRequest,
+        TOPICS.configurationsResponse,
+        undefined);
+    const casesResponse = request(
+        TOPICS.casesRequest,
+        TOPICS.casesResponse,
+        undefined);
+    const openedConfigurations = responseArray(opened, "Configurations");
+    const queriedConfigurations = responseArray(configurationsResponse, "");
+    const openedCases = responseArray(opened, "Cases");
+    const queriedCases = responseArray(casesResponse, "");
+    const configurations = queriedConfigurations.length > 0
+        ? queriedConfigurations : openedConfigurations;
+    const cases = queriedCases.length > 0 ? queriedCases : openedCases;
 
-    // 查询成功即视为连接可用；失败时只回收句柄，避免 SDK Dispose 阻塞。
-    let connected = false;
-    try {
-        let info = null;
+    const tcf = chooseConfiguration(configurations, ".tcf", "测试配置");
+    const tbf = chooseConfiguration(configurations, ".tbf", "测试台配置");
+    request(TOPICS.settingRequest, TOPICS.settingResponse, {
+        OperationType: 0,
+        ConstaraintUpdate: optionBoolean("ConstraintUpdate", true),
+        ConfigPath: tcf.NativePath,
+    });
+    request(TOPICS.settingRequest, TOPICS.settingResponse, {
+        OperationType: 1,
+        ConstaraintUpdate: optionBoolean("ConstraintUpdate", true),
+        ConfigPath: tbf.NativePath,
+    });
+    testConfigurationPath = tcf.NativePath;
+    testbenchConfigurationPath = tbf.NativePath;
+    selectedCases = selectCases(cases);
+    task.info(
+        `VCarEA 工程已打开并配置：TCF=${tcf.Path}；TBF=${tbf.Path}；`
+        + `待执行 Case=${selectedCases.length}`);
+    task.progress(45);
+}
+
+/** 阶段 6：启动实验环境，并使用文档中的执行端口查询确认 API 可响应。 */
+export function startMeasurement() {
+    if (!projectOpened) {
+        throw new Error("启动实验环境前必须先打开 VCarEA 工程");
+    }
+    // 请求超时时无法确认环境是否已经启动，因此发送前就进入待清理状态。
+    environmentStarted = true;
+    request(
+        TOPICS.environmentRequest,
+        TOPICS.environmentResponse,
+        {OperationType: 0});
+
+    const settleMs = optionInteger(
+        "EnvironmentSettleMs", DEFAULT_ENVIRONMENT_SETTLE_MS, 0, 60000);
+    if (settleMs > 0) {
+        task.delay(settleMs);
+    }
+    // 文档没有“实验环境状态”接口；这里只能以启动应答成功且业务 API
+    // 仍可查询为就绪依据，ExecutionMqttPort=0 在尚未执行时是合法值。
+    const status = request(
+        TOPICS.executionPortRequest,
+        TOPICS.executionPortResponse,
+        undefined);
+    const port = Number(status.Data && status.Data.ExecutionMqttPort);
+    if (!Number.isInteger(port) || port < 0 || port > 65535) {
+        throw new Error("VCarEA 执行端口查询返回无效数据");
+    }
+    task.info(`VCarEA 实验环境已启动，当前执行 MQTT 端口：${port}`);
+    task.progress(55);
+}
+
+/** 阶段 7：依次打开并执行选中的 Case，保留接口应答及报告事件状态。 */
+export function execute() {
+    if (!environmentStarted) {
+        throw new Error("执行测试前必须先启动 VCarEA 实验环境");
+    }
+    if (selectedCases.length === 0) {
+        throw new Error("没有可执行的 VCarEA Case");
+    }
+    for (let index = 0; index < selectedCases.length; ++index) {
+        task.checkCancelled();
+        const selected = selectedCases[index];
+        activeCasePath = selected.NativePath;
+        const eventStart = reportEventCount();
+        let response = null;
+        let executionFailed = false;
         try {
-            info = client.call("TryGetConnectionInfo",
-                               [key],
-                               {timeoutMs: QUERY_TIMEOUT_MS});
-            connected = true;
+            // 请求超时时无法判断 EA 是否已经打开 Case，因此在发送前进入待清理状态。
+            activeCaseMayBeOpen = true;
+            request(
+                TOPICS.caseOperationRequest,
+                TOPICS.caseOperationResponse,
+                {OperationType: 0, CasePath: activeCasePath});
+            task.info(
+                `执行 VCarEA Case ${index + 1}/${selectedCases.length}：${selected.Path}`);
+            response = request(
+                TOPICS.caseExecuteRequest,
+                TOPICS.caseExecuteResponse,
+                executionRequestData(activeCasePath),
+                executionTimeout());
+            drainReportEvents();
         } catch (error) {
-            if (isSessionResetError(error)) {
-                dropSdkSession(describeError(error));
+            executionFailed = true;
+            throw error;
+        } finally {
+            if (activeCaseMayBeOpen && isConnected()) {
+                const timeoutMs = cleanupTimeout();
+                if (executionFailed) {
+                    cleanupCall(
+                        "停止执行失败的 VCarEA Case",
+                        () => stopActiveCase(timeoutMs));
+                    cleanupCall(
+                        "关闭执行失败的 VCarEA Case",
+                        () => closeActiveCase(timeoutMs));
+                } else {
+                    closeActiveCase(timeoutMs);
+                }
             }
-            throw new Error(`查询连接服务 [${key}] 失败：${describeError(error)}`);
         }
-        if (info === null || info === undefined) {
-            throw missingConnectionServiceError(key);
-        }
-        const configuration = normalizeConnectionInfo(info, key);
-        persistConfiguration(configuration);
-        task.progress(100);
-        return configuration;
-    } finally {
-        closeClient(client, connected);
+
+        const eventSnapshot = reportEventsSince(eventStart);
+        const reportPath = String(
+            response && response.Data && response.Data.ReportPath || "").trim();
+        executionResults.push({
+            Case: selected.Path,
+            Status: evaluateCaseStatus(eventSnapshot.Events),
+            ReportPath: reportPath,
+            Response: response,
+            ReportEvents: eventSnapshot.Events,
+            DroppedReportEventCount: eventSnapshot.DroppedEventCount,
+        });
+        task.progress(55 + Math.round((index + 1) / selectedCases.length * 35));
     }
 }
 
-/** 清理阶段：释放 SDK 句柄，并按选项决定是否关闭插件启动的 VCarEA 进程。 */
+/** 阶段 8：下载文档规定的 ZIP 报告，发布结构化执行结果。 */
+export function collectArtifacts() {
+    let reportIndex = 0;
+    for (const result of executionResults) {
+        if (result.ReportPath === "") {
+            addCollectionError(`Case [${result.Case}] 的执行应答未返回 ReportPath`);
+            continue;
+        }
+        reportIndex += 1;
+        try {
+            const downloaded = downloadReport(result.ReportPath, reportIndex);
+            reportDownloads.push({
+                Case: result.Case,
+                ReportPath: result.ReportPath,
+                ...downloaded,
+            });
+        } catch (error) {
+            addCollectionError(
+                `下载 Case [${result.Case}] 报告失败：${error.message}`);
+        }
+    }
+    publishExecutionSummary();
+    const failedCases = executionResults
+        .filter((result) => result.Status === "failed")
+        .map((result) => result.Case);
+    task.progress(100);
+    if (failedCases.length > 0 || collectionErrors.length > 0) {
+        const failures = [];
+        if (failedCases.length > 0) {
+            failures.push(`VCarEA 测试失败：${failedCases.join("、")}`);
+        }
+        failures.push(...collectionErrors);
+        throw new Error(failures.join("；"));
+    }
+}
+
+function cleanupCall(description, callback) {
+    try {
+        callback();
+    } catch (error) {
+        task.warning(`${description}失败：${error.message}`);
+    }
+}
+
+/** 清理阶段：关闭测试资源、MQTT、Connector SDK 和本次启动的宿主。 */
 export function cleanup() {
-    if (sdkAssembly !== null) {
-        try {
-            sdkAssembly.close();
-        } catch (error) {
-            task.warning(`关闭 Connector SDK 失败：${describeError(error)}`);
+    const timeoutMs = cleanupTimeout();
+    if (isConnected()) {
+        if (activeCasePath !== "") {
+            cleanupCall("停止活动 VCarEA Case", () => stopActiveCase(timeoutMs));
         }
-        sdkAssembly = null;
+        if (activeCaseMayBeOpen) {
+            cleanupCall("关闭活动 VCarEA Case", () => closeActiveCase(timeoutMs));
+        }
+        if (environmentStarted) {
+            cleanupCall("停止 VCarEA 实验环境", () => request(
+                TOPICS.environmentRequest,
+                TOPICS.environmentResponse,
+                {OperationType: 1},
+                timeoutMs));
+            environmentStarted = false;
+        }
+        if (projectOpened) {
+            cleanupCall("关闭 VCarEA 工程", () => request(
+                TOPICS.projectRequest,
+                TOPICS.projectResponse,
+                {
+                    OperationType: 1,
+                    ProjectPath: projectPath,
+                    ConstaraintUpdate: optionBoolean("ConstraintUpdate", true),
+                },
+                timeoutMs));
+            projectOpened = false;
+        }
+        cleanupCall("断开 VCarEA MQTT", disconnect);
     }
-
-    if (processHandle !== null) {
-        const handle = processHandle;
-        processHandle = null;
-        if (processStartedByPlugin
-                && Boolean(task.option("CloseVcareaOnCleanup", false))) {
-            try {
-                cli.terminate(handle, 5000);
-                task.info("已终止插件启动的 VCarEA 进程");
-            } catch (error) {
-                task.warning(`终止 VCarEA 失败：${describeError(error)}`);
-            }
-        }
-        try {
-            // 仍在运行的进程由运行时在节点结束时回收，句柄只能在进程结束后释放。
-            if (!cli.isRunning(handle)) {
-                cli.release(handle);
-            }
-        } catch (error) {
-            task.warning(`释放 VCarEA 进程句柄失败：${describeError(error)}`);
-        }
-    }
-
-    task.info("VCarEA 适配器清理完成");
+    cleanupCall("清理 VCarEA Connector", cleanupConnector);
+    resetProtocol();
+    resetExecutionState();
+    task.info("VCarEA 测试适配器清理完成");
     task.progress(100);
 }
