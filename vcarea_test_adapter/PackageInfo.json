@@ -4,8 +4,8 @@
     "PackageNameCN": "VCarEA 测试适配器",
     "PackageNameEN": "VCarEA Test Adapter",
     "PackageVersion": "1.0.0",
-    "DescriptionCN": "启动昆易 VCarEA 宿主并查询 MQTT 连接配置",
-    "DescriptionEN": "Start the Kunyi VCarEA host and query its MQTT connection configuration",
+    "DescriptionCN": "启动昆易 VCarEA、查询 MQTT 连接配置并执行工程内测试用例",
+    "DescriptionEN": "Start VCarEA, query its MQTT connection configuration, and execute project test cases",
     "Author": "DOTRUST",
     "NodeType": "Test",
     "CapabilityNameCN": "VCarEA 测试",
@@ -32,10 +32,14 @@
                 }
             ],
             "AllowTerminal": false
+        },
+        "MQTT": {
+            "ProtocolVersion": "3.1.1"
         }
     },
     "CallingRuntime": [
-        "CLI"
+        "CLI",
+        "MQTT"
     ],
     "SelfExaminationAbility": true,
     "RequirementProperty": [
@@ -85,6 +89,11 @@
                     "id": "xlsx",
                     "nameCN": "XLSX 报告",
                     "nameEN": "XLSX Report"
+                },
+                {
+                    "id": "zip",
+                    "nameCN": "VCarEA 原生 ZIP 报告",
+                    "nameEN": "VCarEA Native ZIP Report"
                 }
             ],
             "required": true,

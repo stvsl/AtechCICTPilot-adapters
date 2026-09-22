@@ -1,13 +1,8 @@
 /* VCarEA 安装目录与关键文件定位工具。
  *
- * 查找规则参照适配器 docs/sdk_loader.py：
- *  - 起点为工位属性配置的软件路径，未配置时使用本机默认安装目录；
- *  - 配置指向 CentralServices/Drivers/Executor 等子目录时回退到上级安装根目录；
- *  - VCarEA 主可执行文件与 Connector SDK 程序集位于同一安装根目录。
- *
- * 插件运行时的文件系统只允许访问 URI 根，因此这里只推导候选路径；
- * 路径是否真实存在由 cli / dllnet 调用结果判定，并在失败时使用
- * describeInstallation() 给出完整诊断。
+ * 起点为工位属性配置的软件路径，未配置时使用本机默认安装目录；配置指向
+ * CentralServices/Drivers/Executor 等已知子目录时回退到上级安装根目录。
+ * 路径是否存在及是否获得执行权限分别由 @atech/cli 与 @atech/dllnet 校验。
  */
 
 /** 本机默认安装目录（VCarEA 的约定安装位置）。 */
@@ -16,15 +11,15 @@ export const DEFAULT_INSTALL_ROOT = "C:\\KunyiSoftwares\\VCarEA";
 /** VCarEA 主可执行文件名。 */
 export const EXECUTABLE_NAME = "VCarEA.exe";
 
-/** Connector SDK 程序集文件名（docs/main.py 查询连接配置使用的同一程序集）。 */
+/** Connector SDK 程序集文件名。 */
 export const CONNECTOR_SDK_NAME = "KY.VCar.Central.Connector.Sdk.dll";
 
 /** 中央服务可执行文件相对安装根目录的路径。 */
 export const CENTRAL_SERVICE_RELATIVE_PATH =
     "CentralServices\\VCarEA.Central.Service.exe";
 
-/** 已知只部署子服务、不含 Connector SDK 的目录名。 */
-const DIRECTORIES_WITHOUT_SDK = ["centralservices", "drivers", "executor"];
+/** 已知不包含 VCarEA 主程序的子服务目录名。 */
+const SERVICE_DIRECTORIES = ["centralservices", "drivers", "executor"];
 
 /** 向上回退的最大层数，避免异常配置导致路径被无限裁剪。 */
 const MAXIMUM_PARENT_STEPS = 4;
@@ -87,7 +82,7 @@ export function resolveInstallRoot(softwarePath) {
     // 配置误指向子服务目录时，回退到真正的安装根目录。
     for (let step = 0; step < MAXIMUM_PARENT_STEPS; ++step) {
         const name = splitNativePath(root).name.toLowerCase();
-        if (!DIRECTORIES_WITHOUT_SDK.includes(name)) {
+        if (!SERVICE_DIRECTORIES.includes(name)) {
             break;
         }
         const parent = splitNativePath(root).directory;

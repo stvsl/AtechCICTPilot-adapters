@@ -1,42 +1,79 @@
 # VCarEA 测试适配器
 
-启动昆易 VCarEA 宿主，并通过其 Connector SDK 查询宿主已创建的 MQTT 连接服务配置。
-查找安装目录、可执行文件与 Connector SDK 程序集的逻辑集中在
-`scripts/vcarea/vcarea_utils.js`。
-
-## 执行阶段
-
-| 阶段             | 导出函数         | 说明                                                                                                                              |
-| ---------------- | ---------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| 启动VCarEA       | `launch`         | 解析安装布局并启动 `VCarEA.exe`；宿主已在运行时直接复用；随后轮询连接服务直到就绪                                                 |
-| 获取MQTT连接配置 | `readMqttConfig` | 通过 Connector SDK 的 `ConnectorServiceClient` 查询连接服务，写出 `workspace://vcarea/mqtt-config.json` 并发布 `MQTT_CONFIG` 产物 |
-| 清理             | `cleanup`        | 释放 SDK 句柄，并按选项决定是否终止插件启动的 VCarEA 进程                                                                         |
+适配器保留旧版 Connector SDK 启动与连接配置查询流程，并通过
+`EA外部调用接口.md` 声明的 MQTT 3.1.1 接口打开工程、配置测试环境、
+执行 Case，最后下载 VCarEA 生成的 ZIP 报告。
 
 ## 依赖
 
-- 插件运行时必须提供 .NET 程序集加载能力（`@atech/dllnet`）及其 worker
-  （`workers/dllnet_worker.exe`）；缺失时阶段直接失败并给出安装布局诊断。
-- 连接配置由 VCarEA 宿主进程创建，需 `VCarEA.Central.Service.exe` 处于运行状态。
-- Connector SDK 查询失败（含 `Connect` 失败或 key 不存在）会直接报错，不做降级。
+- 插件运行时必须提供 `@atech/dllnet` 及 `dllnet_worker.exe`。
+- VCarEA 安装目录必须包含 `KY.VCar.Central.Connector.Sdk.dll`；中心服务路径按
+  `CentralServices\\VCarEA.Central.Service.exe` 解析。
+- Connector 连接或 key 查询失败会终止流程，不会绕过旧版配置发现阶段。
 
-## 节点选项
+## 执行阶段
 
-| 选项                   | 默认值   | 说明                                               |
-| ---------------------- | -------- | -------------------------------------------------- |
-| `ConnectionKey`        | `VCarEA` | 连接服务唯一标识，可选 `VCarEA`、`VCarEA.Executor` |
-| `CloseVcareaOnCleanup` | `false`  | 清理阶段是否终止由本插件启动的 VCarEA 进程         |
+| 阶段 | 导出函数 | 说明 |
+| --- | --- | --- |
+| 准备 VCarEA 测试工程 | `prepare` | 解压工程 ZIP，定位唯一的 `.hlt` 文件，解析 Case 筛选条件和报告格式 |
+| 启动 VCarEA | `launch` | 通过 Connector SDK 探测已有服务；服务不存在时启动 `VCarEA.exe` 并等待指定 key 就绪 |
+| 获取 MQTT 连接配置 | `readMqttConfig` | 调用 `TryGetConnectionInfo`，发布旧版 `MQTT_CONFIG` 产物，并把实际连接参数交给 MQTT 阶段 |
+| 连接 EA MQTT 服务 | `connect` | 使用 Connector 返回的 broker 参数连接，通过 Ping 等待 EA 就绪，并登记 API 客户端 |
+| 打开工程并配置测试环境 | `configure` | 打开工程，查询并配置 TCF/TBF，查询待执行 Case |
+| 启动并等待实验环境就绪 | `startMeasurement` | 启动实验环境，并通过执行端口查询确认业务接口仍可响应 |
+| 执行测试用例 | `execute` | 逐个打开、执行和关闭选中的 Case，采集执行应答及报告事件 |
+| 收集测试报告 | `collectArtifacts` | 按 `Report/Download -> Report/Push` 流程下载 ZIP，并发布 JSON 执行摘要 |
+| 清理 | `cleanup` | 停止活动 Case，关闭 Case、实验环境和工程，断开 MQTT，并停止本次插件启动的 VCarEA |
+
+## 任务输入
+
+| 输入 | 说明 |
+| --- | --- |
+| `VCAR_EA_PROJECT` | 必填的 VCarEA 工程 ZIP；解压后必须且只能包含一个 `.hlt` 文件 |
+| `TEST_CASE_IDS` | 可选的 `.json`/`.txt` 文件；按 Case 相对路径、文件名或无扩展名名称筛选，留空时执行接口返回的全部 Case |
+| `VCAR_EA_REPORT_TYPE` | 必填；保留旧版 `html`、`pdf`、`xlsx`，并提供原生 `zip`。接口文档当前只能实际下载 ZIP |
 
 ## 工位属性
 
-| 属性                    | 说明                                                                                                                                      |
-| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `VCAR_EA_SOFTWARE_PATH` | `VCarEA.exe` 路径；为空时使用默认安装目录 `C:\KunyiSoftwares\VCarEA`。指向已安装目录或 `CentralServices` 等子目录时会自动回退到安装根目录 |
-| `VCAR_EA_WORK_DIR`      | VCarEA 工作目录，供后续工程、报告阶段使用                                                                                                 |
-| `VCAR_EA_DEVICE_CONFIG_PATH` | VCarEA 设备配置 ZIP 文件路径；当前仅保存并向运行时暴露该路径，后续由项目配置阶段提取包内 `*.emr` 文件                         |
+| 属性 | 说明 |
+| --- | --- |
+| `VCAR_EA_SOFTWARE_PATH` | `VCarEA.exe` 路径；为空时使用 `C:\\KunyiSoftwares\\VCarEA\\VCarEA.exe` |
+| `VCAR_EA_WORK_DIR` | 旧版 VCarEA 工作目录字段，继续保留在清单中 |
+| `VCAR_EA_DEVICE_CONFIG_PATH` | 旧版设备配置 ZIP 字段，继续保留在清单中 |
 
-## 失败排查
+`EA外部调用接口.md` 没有工作目录或设备配置 ZIP 的加载接口，因此后两个字段
+只会被记录到执行摘要，不会擅自发送给 EA。
 
-- `加载 Connector SDK 失败`：确认安装目录中存在
-  `KY.VCar.Central.Connector.Sdk.dll`，且运行时的 .NET worker 已部署。
-- `连接中心服务失败`：确认 `VCarEA.Central.Service.exe` 已随宿主启动。
-- `连接服务 [key] 尚未创建`：宿主未创建该 key，确认 VCarEA 已启动并启用了对应服务。
+## 协议与假设
+
+- `readMqttConfig` 使用旧版 Connector SDK 返回的 Host、Port、UserName、
+  Password 和 KeepAliveSeconds；文档中的 `127.0.0.1:11883` 参数仅作为协议模块初始值。
+- 文档没有实验环境状态查询接口，因此环境启动应答成功、等待 1000 ms 且执行端口查询成功后视为就绪。
+- 文档没有说明 `ExecutionMqttPort` 是否对应独立报告 broker，也未提供该连接的认证规则；当前在 Connector 返回的主连接（文档示例端口为 `11883`）上订阅报告事件。
+- 文档没有规定多份 TCF/TBF 的选择方式；当前按接口返回顺序选择第一份并输出警告。
+- 文档只定义 ZIP 报告。选择旧版 HTML、PDF 或 XLSX 时会记录兼容提示并发布
+  原生 ZIP，不会把 ZIP 冒充其他格式；需要厂商提供正式转换工具或 API 才能生成对应格式。
+- 文档没有规定各类超时、轮询间隔、报告大小上限和包头字节序；代码中的假设值均以 `TODO` 标注。
+
+## 常用节点选项
+
+| 选项 | 默认值 | 说明 |
+| --- | --- | --- |
+| `ConnectionKey` | `VCarEA` | Connector 服务 key；也可使用 `VCarEA.Executor` |
+| `AttachExisting` | `false` | 为 `true` 时禁止启动新进程，Connector 服务不存在则直接失败；默认也会优先复用已有实例 |
+| `ConstraintUpdate` | `true` | 打开工程及配置 TCF/TBF 时强制更新 Case |
+| `EnvironmentSettleMs` | `1000` | 环境启动应答后的假设稳定等待时间 |
+| `ReportEventSettleMs` | `500` | Case 执行应答后的报告事件收尾时间 |
+| `ResponseTimeoutMs` | `30000` | 普通 MQTT 应答超时 |
+| `ExecutionTimeoutMs` | `1800000` | 单个 Case 执行应答超时 |
+| `ReportTimeoutMs` | `600000` | 单份报告下载超时 |
+| `CleanupTimeoutMs` | `5000` | 单次清理接口应答超时 |
+
+插件启动的 VCarEA 进程由 CLI 运行时托管，清理阶段会停止该进程；使用
+`AttachExisting=true` 连接的既有进程不受影响。
+
+## 产物
+
+- `MQTT_CONFIG`：旧版流程保留的 Connector MQTT 连接配置 JSON。
+- `VCAREA_REPORT:zip:<序号>`：每个成功下载的 VCarEA ZIP 报告。
+- `VCAREA_EXECUTION_RESULT`：包含工程、Case 状态、接口应答、报告事件、下载结果和采集错误的 JSON 摘要。
