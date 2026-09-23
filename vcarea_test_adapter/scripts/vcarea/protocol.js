@@ -11,34 +11,21 @@ const DEFAULT_BROKER_CONFIGURATION = Object.freeze({
 const APPLICATION_NAME = "AtechCICTPilot.exe";
 const CLIENT_NAME = "AtechCICTPilot";
 
-// TODO: 接口文档没有定义连接、应答、就绪轮询及清理超时，以下为适配器假设值。
+// TODO: 接口文档没有定义连接、应答及清理超时，以下为适配器假设值。
 const DEFAULT_CONNECT_TIMEOUT_MS = 10000;
 const DEFAULT_RESPONSE_TIMEOUT_MS = 30000;
-const DEFAULT_READY_TIMEOUT_MS = 120000;
-const DEFAULT_READY_RESPONSE_TIMEOUT_MS = 3000;
 const DEFAULT_EXECUTION_TIMEOUT_MS = 1800000;
 const DEFAULT_REPORT_TIMEOUT_MS = 600000;
 const DEFAULT_CLEANUP_TIMEOUT_MS = 5000;
-const READY_POLL_INTERVAL_MS = 1000;
 const RECEIVE_POLL_INTERVAL_MS = 250;
 
 // TODO: 文档没有规定单次执行可产生的报告事件上限，暂限制为 10000 条，
 // 并在执行结果中记录被丢弃的数量，避免异常服务耗尽脚本内存。
 const MAX_REPORT_EVENTS = 10000;
 
-class ProtocolResponseTimeoutError extends Error {
-    constructor(message) {
-        super(message);
-        this.name = "ProtocolResponseTimeoutError";
-    }
-}
-
 export const TOPICS = Object.freeze({
     will: "KY/VCar/Will",
-    pingRequest: "KY/VCar/Ping/Request",
-    pingResponse: "KY/VCar/Ping/Response",
     accessRequest: "KY/VCar/AccessInformation/Request",
-    accessResponse: "KY/VCar/AccessInformation/Response",
     projectRequest: "KY/VCar/EA/ProjectManagement/Request",
     projectResponse: "KY/VCar/EA/ProjectManagement/Response",
     configurationsRequest: "KY/VCar/EA/Configurations/Request",
@@ -74,8 +61,6 @@ const REPORT_TOPICS = Object.freeze([
 ]);
 
 const RESPONSE_TOPICS = Object.freeze([
-    TOPICS.pingResponse,
-    TOPICS.accessResponse,
     TOPICS.projectResponse,
     TOPICS.configurationsResponse,
     TOPICS.settingResponse,
@@ -213,11 +198,6 @@ function appendReportEvent(topic, payload) {
     });
 }
 
-function normalizeApplicationName(value) {
-    return String(value === undefined || value === null ? "" : value)
-        .trim().replace(/\.exe$/i, "").toLowerCase();
-}
-
 function requireConnected() {
     if (connectionHandle === null || !mqtt.isConnected(connectionHandle)) {
         throw new Error("VCarEA MQTT 连接尚未建立或已经断开");
@@ -226,15 +206,6 @@ function requireConnected() {
 
 function statusDescription(code) {
     return STATUS_TEXT[code] || "未知状态";
-}
-
-function isRetryableReadyError(error) {
-    if (error instanceof ProtocolResponseTimeoutError) {
-        return true;
-    }
-    const code = error && error.code !== undefined
-        ? String(error.code).toUpperCase() : "";
-    return code === "MQTT_ERROR" || code === "TIMEOUT";
 }
 
 export function responseTimeout() {
@@ -417,8 +388,7 @@ export function waitForResponse(responseTopic,
         }
         return response;
     }
-    throw new ProtocolResponseTimeoutError(
-        `等待 VCarEA 应答超时：${responseTopic}（${requestId}）`);
+    throw new Error(`等待 VCarEA 应答超时：${responseTopic}（${requestId}）`);
 }
 
 export function request(requestTopic,
@@ -483,68 +453,16 @@ function connectBroker() {
     task.info(`已连接 VCarEA MQTT 服务：${brokerConfiguration.ServerUri}`);
 }
 
-/** 使用文档的 Ping 接口等待 EA API 就绪。 */
-export function waitForEaReady(checkProcess = null) {
-    const timeoutMs = optionInteger(
-        "ReadyTimeoutMs", DEFAULT_READY_TIMEOUT_MS, 1, 1800000);
-    const pingTimeoutMs = optionInteger(
-        "ReadyResponseTimeoutMs",
-        DEFAULT_READY_RESPONSE_TIMEOUT_MS,
-        1,
-        60000);
-    const expectedAppName = normalizeApplicationName(
-        optionString("ReadyAppName", "VCarEA"));
-    const deadline = Date.now() + timeoutMs;
-    let attempts = 0;
-    let lastError = null;
-    while (Date.now() < deadline) {
-        task.checkCancelled();
-        if (checkProcess !== null) {
-            checkProcess();
-        }
-        attempts += 1;
-        try {
-            connectBroker();
-            const response = request(
-                TOPICS.pingRequest,
-                TOPICS.pingResponse,
-                {AppName: APPLICATION_NAME},
-                Math.min(pingTimeoutMs, Math.max(1, deadline - Date.now())),
-                (candidate) => normalizeApplicationName(
-                    candidate.Data && candidate.Data.AppName) === expectedAppName);
-            task.info(
-                `VCarEA API 已就绪（${response.Data.AppName}）`);
-            return;
-        } catch (error) {
-            if (!isRetryableReadyError(error)) {
-                throw error;
-            }
-            lastError = error;
-            if (connectionHandle !== null
-                    && !mqtt.isConnected(connectionHandle)) {
-                disconnectCurrentConnection();
-            }
-        }
-        if (attempts % 10 === 0 && Date.now() < deadline) {
-            task.info(
-                `仍在等待 VCarEA API 就绪，最近错误：${lastError.message}`);
-        }
-        if (Date.now() < deadline) {
-            task.delay(Math.min(
-                READY_POLL_INTERVAL_MS, Math.max(1, deadline - Date.now())));
-        }
-    }
-    throw new Error(
-        `等待 VCarEA API 就绪超时（${timeoutMs} ms）`
-        + (lastError === null ? "" : `：${lastError.message}`));
-}
-
-export function registerAccess() {
-    const response = request(
-        TOPICS.accessRequest,
-        TOPICS.accessResponse,
-        {AccessAPPName: APPLICATION_NAME, Target: "VCarEA"});
-    task.info(`VCarEA API 客户端登记成功：${response.Msg || "succeed"}`);
+/** 连接 MQTT 并发布 API 接入通知，具体 API 可用性由后续业务请求验证。 */
+export function connectEaApi() {
+    task.checkCancelled();
+    connectBroker();
+    const registration = createRequest({
+        AccessAPPName: APPLICATION_NAME,
+        Target: "VCarEA",
+    });
+    publishJson(TOPICS.accessRequest, registration);
+    task.info(`已发送 VCarEA API 接入通知（${registration.ID}）`);
 }
 
 export function isConnected() {

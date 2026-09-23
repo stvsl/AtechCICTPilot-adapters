@@ -10,19 +10,18 @@ import {
 import {
     TOPICS,
     cleanupTimeout,
+    connectEaApi,
     configureBroker,
     disconnect,
     executionTimeout,
     initializeProtocol,
     isConnected,
     receiveMessage,
-    registerAccess,
     reportEventCount,
     reportEventsSince,
     request,
     resetProtocol,
     routeProtocolMessage,
-    waitForEaReady,
 } from "./vcarea/protocol.js";
 import { downloadReport } from "./vcarea/report.js";
 
@@ -611,11 +610,11 @@ export function readMqttConfig() {
     return configuration;
 }
 
-/** 阶段 4：按文档连接 MQTT、Ping 等待 EA 就绪并登记 API 客户端。 */
+/** 阶段 4：连接 MQTT，并按文档发送 API 接入通知。 */
 export function connect() {
     requirePrepared();
-    waitForEaReady(ensureVcareaProcessRunning);
-    registerAccess();
+    ensureVcareaProcessRunning();
+    connectEaApi();
     task.progress(25);
 }
 

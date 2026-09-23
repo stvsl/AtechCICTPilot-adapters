@@ -21,7 +21,7 @@ stages {
         }
     }
     stage("连接 EA MQTT 服务") {
-        // TODO: 接口文档未规定 MQTT 与 Ping 就绪超时，暂按 150 秒处理。
+        // TODO: 接口文档未规定 MQTT 连接与接入通知发布超时，暂按 150 秒处理。
         timeout(150000)
         steps {
             runjs("scripts/vcarea_test.js", "connect")
