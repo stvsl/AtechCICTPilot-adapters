@@ -166,24 +166,6 @@ function closeClient(client, dispose = true) {
     }
 }
 
-function probeConnectionService(timeoutMs) {
-    let client = null;
-    let connected = false;
-    try {
-        client = connectClient(timeoutMs);
-        connected = true;
-        return true;
-    } catch (error) {
-        if (isSessionResetError(error)) {
-            dropSdkSession(describeError(error));
-        }
-        task.info(`连接服务暂不可用：${describeError(error)}`);
-        return false;
-    } finally {
-        closeClient(client, connected);
-    }
-}
-
 function probeConnectionServiceKey(key, timeoutMs) {
     let client = null;
     let connected = false;
@@ -308,21 +290,20 @@ function persistConfiguration(configuration) {
     task.info(`MQTT 连接配置已保存并发布：${WORKSPACE_CONFIG_URI}`);
 }
 
-/** 启动 VCarEA，或复用已经提供指定 Connector key 的宿主实例。 */
+/** 默认启动 VCarEA；仅在显式附加模式下复用已有宿主实例。 */
 export function launchVcarea(attachExisting = false) {
     const target = requireInstallation();
     const key = connectionKey();
 
-    if (probeConnectionService(CONNECT_PROBE_TIMEOUT_MS)) {
-        task.info("VCarEA 宿主连接服务已在运行，跳过启动");
-        if (!probeConnectionServiceKey(key, CONNECT_QUERY_TIMEOUT_MS)) {
-            throw missingConnectionServiceError(key);
-        }
-        return {Started: false, ExecutablePath: target.ExecutablePath};
-    }
     if (attachExisting) {
-        throw new Error(
-            "AttachExisting=true，但未检测到可用的 VCarEA Connector 服务");
+        if (!probeConnectionServiceKey(key, CONNECT_QUERY_TIMEOUT_MS)) {
+            throw new Error(
+                `AttachExisting=true，但连接服务 [${key}] 不可用：`
+                + "请先启动 VCarEA 并等待其完成初始化");
+        }
+        task.info(
+            `AttachExisting=true，复用已有 VCarEA 实例及连接服务 [${key}]`);
+        return {Started: false, ExecutablePath: target.ExecutablePath};
     }
 
     task.info(`启动 VCarEA：${target.ExecutablePath}`);
@@ -331,8 +312,8 @@ export function launchVcarea(attachExisting = false) {
         started = cli.start({
             executable: target.ExecutablePath,
             arguments: [],
-            // VCarEA 会创建 Logs 目录，使用任务临时目录避免污染工程。
-            workingDirectoryUri: "temp://",
+            // 绿色版会按当前目录发现 Gemini 模块和内置驱动。
+            workingDirectoryUri: "executable://",
         });
     } catch (error) {
         throw new Error(

@@ -594,7 +594,7 @@ export function prepare(projectPackage) {
     task.progress(5);
 }
 
-/** 阶段 2：按旧版流程探测 Connector 服务，必要时启动 VCarEA。 */
+/** 阶段 2：默认启动 VCarEA；显式附加时复用已有实例。 */
 export function launch() {
     requirePrepared();
     const result = launchVcarea(optionBoolean("AttachExisting", false));
