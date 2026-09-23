@@ -26,6 +26,13 @@ const RECEIVE_POLL_INTERVAL_MS = 250;
 // 并在执行结果中记录被丢弃的数量，避免异常服务耗尽脚本内存。
 const MAX_REPORT_EVENTS = 10000;
 
+class ProtocolResponseTimeoutError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = "ProtocolResponseTimeoutError";
+    }
+}
+
 export const TOPICS = Object.freeze({
     will: "KY/VCar/Will",
     pingRequest: "KY/VCar/Ping/Request",
@@ -221,6 +228,15 @@ function statusDescription(code) {
     return STATUS_TEXT[code] || "未知状态";
 }
 
+function isRetryableReadyError(error) {
+    if (error instanceof ProtocolResponseTimeoutError) {
+        return true;
+    }
+    const code = error && error.code !== undefined
+        ? String(error.code).toUpperCase() : "";
+    return code === "MQTT_ERROR" || code === "TIMEOUT";
+}
+
 export function responseTimeout() {
     return optionInteger(
         "ResponseTimeoutMs", DEFAULT_RESPONSE_TIMEOUT_MS, 1, 1800000);
@@ -401,7 +417,7 @@ export function waitForResponse(responseTopic,
         }
         return response;
     }
-    throw new Error(
+    throw new ProtocolResponseTimeoutError(
         `等待 VCarEA 应答超时：${responseTopic}（${requestId}）`);
 }
 
@@ -500,6 +516,9 @@ export function waitForEaReady(checkProcess = null) {
                 `VCarEA API 已就绪（${response.Data.AppName}）`);
             return;
         } catch (error) {
+            if (!isRetryableReadyError(error)) {
+                throw error;
+            }
             lastError = error;
             if (connectionHandle !== null
                     && !mqtt.isConnected(connectionHandle)) {

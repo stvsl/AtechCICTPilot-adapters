@@ -152,7 +152,7 @@ export function decodeCliText(value) {
         try {
             return new TextDecoder().decode(value).trim();
         } catch (_) {
-            // 继续使用内置解码器，兼容未实现 TextDecoder 的 QuickJS 构建。
+            // 非标准运行时或无效输入继续使用本地 UTF-8 解码器。
         }
     }
     if (typeof value.length === "number") {
