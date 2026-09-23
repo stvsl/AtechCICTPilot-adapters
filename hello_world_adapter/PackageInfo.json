@@ -23,7 +23,11 @@
             "nameCN": "等待测试时长（秒，0-600）",
             "nameEN": "Test Wait Duration (seconds, 0-600)",
             "type": "integer",
-            "required": true
+            "required": true,
+            "platform": {
+                "type": "Original",
+                "tags": []
+            }
         }
     ],
     "OnDeviceProperty": []
