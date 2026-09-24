@@ -18,7 +18,7 @@
 | 准备 VCarEA 测试工程 | `prepare` | 解压工程 ZIP，定位唯一的 `.hlt` 文件，解析 Case 筛选条件和报告格式 |
 | 启动 VCarEA | `launch` | 默认启动 `VCarEA.exe` 并等待指定 Connector key 就绪；仅在 `AttachExisting=true` 时复用已有实例 |
 | 获取 MQTT 连接配置 | `readMqttConfig` | 调用 `TryGetConnectionInfo`，发布旧版 `MQTT_CONFIG` 产物，并把实际连接参数交给 MQTT 阶段 |
-| 连接 EA MQTT 服务 | `connect` | 使用 Connector 返回的 broker 参数连接，发布 API 接入通知后立即进入下一阶段 |
+| 连接 EA MQTT 服务 | `connect` | 使用 Connector 返回的 broker 参数连接，重试接入握手直至 VCarEA 返回登记成功 |
 | 打开工程并配置测试环境 | `configure` | 打开工程，查询并配置 TCF/TBF，查询待执行 Case |
 | 启动并等待实验环境就绪 | `startMeasurement` | 启动实验环境，并通过执行端口查询确认业务接口仍可响应 |
 | 执行测试用例 | `execute` | 逐个打开、执行和关闭选中的 Case，采集执行应答及报告事件 |
@@ -50,6 +50,9 @@
   Password 和 KeepAliveSeconds；文档中的 `127.0.0.1:11883` 参数仅作为协议模块初始值。
 - 文档没有实验环境状态查询接口，因此环境启动应答成功、等待 1000 ms 且执行端口查询成功后视为就绪。
 - 文档没有说明 `ExecutionMqttPort` 是否对应独立报告 broker，也未提供该连接的认证规则；当前在 Connector 返回的主连接（文档示例端口为 `11883`）上订阅报告事件。
+- 工程打开应答可能早于 VCarEA 后台恢复 TBF 和工程树构造完成；适配器会先等待
+  工程稳定期，并对“当前项目未找到配置路径”的瞬态应答做有界重试。配置请求
+  始终使用任务工程目录中枚举到的真实路径大小写，避免 VCarEA 工程树匹配失败。
 - 文档没有规定多份 TCF/TBF 的选择方式；当前按接口返回顺序选择第一份并输出警告。
 - 文档只定义 ZIP 报告。选择旧版 HTML、PDF 或 XLSX 时会记录兼容提示并发布
   原生 ZIP，不会把 ZIP 冒充其他格式；需要厂商提供正式转换工具或 API 才能生成对应格式。
@@ -62,22 +65,27 @@
 | `ConnectionKey` | `VCarEA` | Connector 服务 key；也可使用 `VCarEA.Executor` |
 | `AttachExisting` | `false` | 为 `false` 时始终调用 `VCarEA.exe`，避免把残留的 Connector 服务误判为 API 宿主；为 `true` 时只复用已有实例，Connector 服务不可用则直接失败 |
 | `ConstraintUpdate` | `true` | 打开工程及配置 TCF/TBF 时强制更新 Case |
+| `ProjectSettleMs` | `10000` | 工程打开应答后等待 VCarEA 后台初始化的稳定时间 |
+| `ProjectReadyTimeoutMs` | `120000` | TCF/TBF 配置路径暂未进入工程树时的总重试上限 |
 | `EnvironmentSettleMs` | `1000` | 环境启动应答后的假设稳定等待时间 |
 | `ReportEventSettleMs` | `500` | Case 执行应答后的报告事件收尾时间 |
+| `AccessReadyTimeoutMs` | `120000` | 等待 VCarEA API 接入就绪的总超时 |
+| `AccessResponseTimeoutMs` | `3000` | 单次 API 接入握手的应答超时 |
 | `ResponseTimeoutMs` | `30000` | 普通 MQTT 应答超时 |
 | `ExecutionTimeoutMs` | `1800000` | 单个 Case 执行应答超时 |
 | `ReportTimeoutMs` | `600000` | 单份报告下载超时 |
 | `CleanupTimeoutMs` | `5000` | 单次清理接口应答超时 |
 
 插件启动的 VCarEA 进程由 CLI 运行时托管，清理阶段会停止该进程；如果 VCarEA
-将启动请求交给已有的单实例进程后正常退出，则继续连接 MQTT 并发送 API 接入通知。
+将启动请求交给已有的单实例进程后正常退出，则继续连接 MQTT 并等待 API 接入就绪。
 使用 `AttachExisting=true` 连接的既有进程不受清理阶段影响。
 
 绿色版 VCarEA 必须以 `VCarEA.exe` 所在目录作为工作目录启动，否则 Gemini 模块和
 内置驱动可能无法被发现。VCarEA 自身日志中“未安装 VCarEE 2.0.3+”以及缺少
 `C:\ProgramData\ASAM\XIL\Implementation` 的记录不参与适配器就绪判定；适配器
-不会创建该目录、扫描注册表或要求安装 VCarEE。Connector 服务就绪即视为宿主启动
-成功；连接阶段不再等待通用 Ping 或接入通知应答，后续业务请求会校验具体 API。
+不会创建该目录、扫描注册表或要求安装 VCarEE。Connector 服务可能早于 VCarEA 的
+MQTT 业务订阅就绪，因此连接阶段会重复发送接入请求并等待匹配应答；只有登记成功后
+才会发送打开工程等业务请求。
 
 ## 产物
 

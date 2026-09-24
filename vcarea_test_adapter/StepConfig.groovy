@@ -21,15 +21,15 @@ stages {
         }
     }
     stage("连接 EA MQTT 服务") {
-        // TODO: 接口文档未规定 MQTT 连接与接入通知发布超时，暂按 150 秒处理。
+        // TODO: 接口文档未规定 MQTT 连接与 API 接入就绪超时，暂按 150 秒处理。
         timeout(150000)
         steps {
             runjs("scripts/vcarea_test.js", "connect")
         }
     }
     stage("打开工程并配置测试环境") {
-        // TODO: 接口文档未规定项目打开及 TCF/TBF 配置超时，暂按 180 秒处理。
-        timeout(180000)
+        // TODO: 接口文档未规定项目后台初始化及 TCF/TBF 配置超时，暂按 300 秒处理。
+        timeout(300000)
         steps {
             runjs("scripts/vcarea_test.js", "configure")
         }

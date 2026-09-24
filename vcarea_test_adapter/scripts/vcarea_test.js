@@ -11,6 +11,7 @@ import {
     TOPICS,
     cleanupTimeout,
     connectEaApi,
+    configureProjectConfiguration,
     configureBroker,
     disconnect,
     executionTimeout,
@@ -33,8 +34,10 @@ const PROJECT_ROOT_URI = "workspace://vcarea-test/project";
 const RESULT_ARTIFACT_URI = "artifact://vcarea-test/execution-result.json";
 const SUPPORTED_REPORT_TYPES = ["html", "pdf", "xlsx", "zip"];
 
-// TODO: 接口文档没有规定启动实验环境后的稳定时间和报告事件收尾时间，
-// 暂分别等待 1000 ms 和 500 ms，可通过节点选项覆盖。
+// TODO: 接口文档没有规定工程后台初始化、启动实验环境后的稳定时间和报告事件
+// 收尾时间，以下均为适配器实测值，可通过节点选项覆盖。
+const DEFAULT_PROJECT_SETTLE_MS = 10000;
+const DEFAULT_PROJECT_READY_TIMEOUT_MS = 120000;
 const DEFAULT_ENVIRONMENT_SETTLE_MS = 1000;
 const DEFAULT_REPORT_EVENT_SETTLE_MS = 500;
 
@@ -45,6 +48,9 @@ let projectPath = "";
 let configuredWorkDirectory = "";
 let deviceConfigurationPath = "";
 let projectOpened = false;
+let projectOpenResponseAt = 0;
+let projectSettleMs = DEFAULT_PROJECT_SETTLE_MS;
+let projectSettled = false;
 let environmentStarted = false;
 let activeCasePath = "";
 let activeCaseMayBeOpen = false;
@@ -225,6 +231,9 @@ function resetExecutionState() {
     configuredWorkDirectory = "";
     deviceConfigurationPath = "";
     projectOpened = false;
+    projectOpenResponseAt = 0;
+    projectSettleMs = DEFAULT_PROJECT_SETTLE_MS;
+    projectSettled = false;
     environmentStarted = false;
     activeCasePath = "";
     activeCaseMayBeOpen = false;
@@ -244,53 +253,66 @@ function requirePrepared() {
     }
 }
 
+function settleOpenedProject() {
+    if (projectOpenResponseAt <= 0 || projectSettled) {
+        return;
+    }
+    const elapsed = Date.now() - projectOpenResponseAt;
+    const remaining = Math.max(0, projectSettleMs - elapsed);
+    if (remaining > 0) {
+        task.info(
+            `等待 VCarEA 完成工程后台初始化（${remaining} ms）`);
+        task.delay(remaining);
+    }
+    projectSettled = true;
+}
+
 function projectRelativePath(uri) {
     const prefix = `${projectRootUri.replace(/\/$/, "")}/`;
     return String(uri).startsWith(prefix)
         ? String(uri).substring(prefix.length) : "";
 }
 
-function uriForAbsoluteInventoryPath(path) {
-    const root = normalizedMatchPath(fs.nativePath(projectRootUri));
-    const candidate = normalizedMatchPath(path);
-    if (candidate === root) {
-        return projectRootUri;
-    }
-    if (!candidate.startsWith(`${root}/`)) {
-        return "";
-    }
-    return `${projectRootUri}/${candidate.substring(root.length + 1)}`;
-}
-
-/** 将项目清单返回的相对或绝对路径解析到本次任务复制的工程目录。 */
-function resolveInventoryUri(path, extension) {
+/**
+ * 将项目清单返回的相对或绝对路径解析到本次任务复制的工程目录。
+ *
+ * 路径归一化仅用于比较；返回值必须来自文件系统枚举，以保留 VCarEA 工程树
+ * 登记的真实大小写。VCarEA 在 Windows 上也会按路径字符串区分大小写。
+ */
+export function resolveInventoryUri(path, extension) {
     const raw = String(path || "").trim();
     if (raw === "") {
         throw new Error(`VCarEA 返回了空的 ${extension} 路径`);
     }
-    if (isAbsoluteNativePath(raw)) {
-        const mapped = uriForAbsoluteInventoryPath(raw);
-        if (mapped !== "" && fs.exists(mapped)) {
-            return mapped;
-        }
-    } else {
-        const relative = raw.replace(/\\/g, "/").replace(/^\.\//, "")
-            .replace(/^\/+/, "");
-        const direct = `${projectRootUri}/${relative}`;
-        if (fs.exists(direct)) {
-            return direct;
-        }
-    }
 
     const target = normalizedMatchPath(raw);
-    const targetName = baseName(target);
-    const matches = projectFiles(extension).filter((entry) => {
-        const relative = normalizedMatchPath(projectRelativePath(entry.uri));
-        return relative === target || relative.endsWith(`/${target}`)
-            || target.endsWith(`/${relative}`) || baseName(relative) === targetName;
-    });
+    const root = normalizedMatchPath(fs.nativePath(projectRootUri));
+    let relativeTarget = target;
+    if (isAbsoluteNativePath(raw) && target.startsWith(`${root}/`)) {
+        relativeTarget = target.substring(root.length + 1);
+    }
+
+    const candidates = projectFiles(extension).map((entry) => ({
+        entry,
+        relative: normalizedMatchPath(projectRelativePath(entry.uri)),
+        native: normalizedMatchPath(fs.nativePath(entry.uri)),
+    }));
+    const exactMatches = candidates.filter((candidate) =>
+        candidate.native === target || candidate.relative === relativeTarget);
+    if (exactMatches.length === 1) {
+        return exactMatches[0].entry.uri;
+    }
+    if (exactMatches.length > 1) {
+        throw new Error(`项目路径 [${raw}] 匹配到多个本地文件`);
+    }
+
+    const targetName = baseName(relativeTarget);
+    const matches = candidates.filter((candidate) =>
+        candidate.relative.endsWith(`/${relativeTarget}`)
+        || relativeTarget.endsWith(`/${candidate.relative}`)
+        || baseName(candidate.relative) === targetName);
     if (matches.length === 1) {
-        return matches[0].uri;
+        return matches[0].entry.uri;
     }
     if (matches.length > 1) {
         throw new Error(`项目路径 [${raw}] 匹配到多个本地文件`);
@@ -610,11 +632,11 @@ export function readMqttConfig() {
     return configuration;
 }
 
-/** 阶段 4：连接 MQTT，并按文档发送 API 接入通知。 */
+/** 阶段 4：连接 MQTT，并等待 VCarEA 完成 API 客户端登记。 */
 export function connect() {
     requirePrepared();
     ensureVcareaProcessRunning();
-    connectEaApi();
+    connectEaApi(ensureVcareaProcessRunning);
     task.progress(25);
 }
 
@@ -624,6 +646,13 @@ export function configure() {
     if (!isConnected()) {
         throw new Error("配置工程前必须先连接 VCarEA MQTT 服务");
     }
+    projectSettleMs = optionInteger(
+        "ProjectSettleMs", DEFAULT_PROJECT_SETTLE_MS, 0, 60000);
+    const readyTimeoutMs = optionInteger(
+        "ProjectReadyTimeoutMs",
+        DEFAULT_PROJECT_READY_TIMEOUT_MS,
+        1,
+        1800000);
     // 请求超时时无法确认 EA 是否已经打开工程，因此发送前就进入待清理状态。
     projectOpened = true;
     const opened = request(
@@ -634,6 +663,8 @@ export function configure() {
             ProjectPath: projectPath,
             ConstaraintUpdate: optionBoolean("ConstraintUpdate", true),
         });
+    projectOpenResponseAt = Date.now();
+    settleOpenedProject();
     const configurationsResponse = request(
         TOPICS.configurationsRequest,
         TOPICS.configurationsResponse,
@@ -652,16 +683,24 @@ export function configure() {
 
     const tcf = chooseConfiguration(configurations, ".tcf", "测试配置");
     const tbf = chooseConfiguration(configurations, ".tbf", "测试台配置");
-    request(TOPICS.settingRequest, TOPICS.settingResponse, {
-        OperationType: 0,
-        ConstaraintUpdate: optionBoolean("ConstraintUpdate", true),
-        ConfigPath: tcf.NativePath,
-    });
-    request(TOPICS.settingRequest, TOPICS.settingResponse, {
-        OperationType: 1,
-        ConstaraintUpdate: optionBoolean("ConstraintUpdate", true),
-        ConfigPath: tbf.NativePath,
-    });
+    const constraintUpdate = optionBoolean("ConstraintUpdate", true);
+    const readyDeadline = Date.now() + readyTimeoutMs;
+    configureProjectConfiguration(
+        0,
+        tcf.NativePath,
+        constraintUpdate,
+        Math.max(1, readyDeadline - Date.now()));
+    const remainingReadyMs = readyDeadline - Date.now();
+    if (remainingReadyMs <= 0) {
+        throw new Error(
+            `等待 VCarEA 工程配置就绪超时（${readyTimeoutMs} ms）：`
+            + "TCF 已配置，但没有剩余时间配置 TBF");
+    }
+    configureProjectConfiguration(
+        1,
+        tbf.NativePath,
+        constraintUpdate,
+        remainingReadyMs);
     testConfigurationPath = tcf.NativePath;
     testbenchConfigurationPath = tbf.NativePath;
     selectedCases = selectCases(cases);
@@ -829,6 +868,9 @@ export function cleanup() {
             environmentStarted = false;
         }
         if (projectOpened) {
+            cleanupCall(
+                "等待 VCarEA 工程后台初始化",
+                settleOpenedProject);
             cleanupCall("关闭 VCarEA 工程", () => request(
                 TOPICS.projectRequest,
                 TOPICS.projectResponse,
