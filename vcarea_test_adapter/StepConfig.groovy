@@ -21,28 +21,32 @@ stages {
         }
     }
     stage("连接 EA MQTT 服务") {
-        // TODO: 接口文档未规定 MQTT 与 Ping 就绪超时，暂按 150 秒处理。
+        // TODO: 接口文档未规定 MQTT 连接与 API 接入就绪超时，暂按 150 秒处理。
         timeout(150000)
         steps {
             runjs("scripts/vcarea_test.js", "connect")
         }
     }
     stage("打开工程并配置测试环境") {
-        // TODO: 接口文档未规定项目打开及 TCF/TBF 配置超时，暂按 180 秒处理。
-        timeout(180000)
+        // TODO: 接口文档未规定项目后台初始化及 TCF/TBF 配置超时，暂按 600 秒处理：
+        // 就绪探测最长 120 秒；单次 TCF/TBF 配置实测 16~21 秒（同步加载 XIL
+        // 环境），其余为配置请求瞬态重试的兜底余量。
+        timeout(600000)
         steps {
             runjs("scripts/vcarea_test.js", "configure")
         }
     }
     stage("启动并等待实验环境就绪") {
-        // TODO: 文档没有实验环境状态查询接口，暂以启动应答及执行端口查询成功为就绪。
-        timeout(180000)
+        // 实测：环境启动应答（约 12 秒）即为就绪信号；执行端口查询接口在
+        // 1.8.4.0826 无任何应答，仅做一次有界观察，不作为失败判据。
+        timeout(120000)
         steps {
             runjs("scripts/vcarea_test.js", "startMeasurement")
         }
     }
     stage("执行测试用例") {
-        // TODO: 接口文档未规定 Case 执行上限，暂按 30 分钟处理。
+        // Case 完成以宿主转发的 Run/Stop 或 Case/Stop 事件判定（主题带 KY/ 前缀）；
+        // 单 Case 执行超时默认 30 分钟（ExecutionTimeoutMs）。
         timeout(1800000)
         steps {
             runjs("scripts/vcarea_test.js", "execute")

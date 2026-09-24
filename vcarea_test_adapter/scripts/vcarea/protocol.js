@@ -11,16 +11,22 @@ const DEFAULT_BROKER_CONFIGURATION = Object.freeze({
 const APPLICATION_NAME = "AtechCICTPilot.exe";
 const CLIENT_NAME = "AtechCICTPilot";
 
-// TODO: 接口文档没有定义连接、应答、就绪轮询及清理超时，以下为适配器假设值。
+// TODO: 接口文档没有定义连接、接入就绪、应答及清理超时，以下为适配器假设值。
 const DEFAULT_CONNECT_TIMEOUT_MS = 10000;
+const DEFAULT_ACCESS_READY_TIMEOUT_MS = 120000;
+const DEFAULT_ACCESS_RESPONSE_TIMEOUT_MS = 3000;
 const DEFAULT_RESPONSE_TIMEOUT_MS = 30000;
-const DEFAULT_READY_TIMEOUT_MS = 120000;
-const DEFAULT_READY_RESPONSE_TIMEOUT_MS = 3000;
 const DEFAULT_EXECUTION_TIMEOUT_MS = 1800000;
 const DEFAULT_REPORT_TIMEOUT_MS = 600000;
 const DEFAULT_CLEANUP_TIMEOUT_MS = 5000;
-const READY_POLL_INTERVAL_MS = 1000;
+const ACCESS_RETRY_INTERVAL_MS = 1000;
+const PROJECT_CONFIGURATION_RETRY_INTERVAL_MS = 1000;
+const PROBE_REPORT_INTERVAL_MS = 3000;
 const RECEIVE_POLL_INTERVAL_MS = 250;
+
+// TODO: 接口文档未定义执行端口探测超时；实测 VCarEA 1.8.4.0826 对
+// `Execution/MqttPort` 查询完全不产生应答，因此只做一次有界观察。
+const DEFAULT_EXECUTION_PORT_PROBE_MS = 3000;
 
 // TODO: 文档没有规定单次执行可产生的报告事件上限，暂限制为 10000 条，
 // 并在执行结果中记录被丢弃的数量，避免异常服务耗尽脚本内存。
@@ -33,10 +39,21 @@ class ProtocolResponseTimeoutError extends Error {
     }
 }
 
+/** 保留 VCarEA 业务应答字段，供上层只重试明确的瞬态错误。 */
+class VcareaResponseError extends Error {
+    constructor(requestId, code, messageText) {
+        super(
+            `VCarEA 请求 ${requestId} 失败：Code=${code}`
+            + `（${statusDescription(code)}）`
+            + (messageText === "" ? "" : `，${messageText}`));
+        this.name = "VcareaResponseError";
+        this.responseCode = code;
+        this.responseMessage = messageText;
+    }
+}
+
 export const TOPICS = Object.freeze({
     will: "KY/VCar/Will",
-    pingRequest: "KY/VCar/Ping/Request",
-    pingResponse: "KY/VCar/Ping/Response",
     accessRequest: "KY/VCar/AccessInformation/Request",
     accessResponse: "KY/VCar/AccessInformation/Response",
     projectRequest: "KY/VCar/EA/ProjectManagement/Request",
@@ -61,20 +78,23 @@ export const TOPICS = Object.freeze({
     executionPortResponse: "KY/VCar/EA/Execution/MqttPort/Response",
 });
 
-const REPORT_TOPICS = Object.freeze([
-    "VCar/EA/TestReport/Run/Start",
-    "VCar/EA/TestReport/Run/Stop",
-    "VCar/EA/TestReport/Plan/Start",
-    "VCar/EA/TestReport/Plan/Stop",
-    "VCar/EA/TestReport/Case/Start",
-    "VCar/EA/TestReport/Case/Stop",
-    "VCar/EA/TestReport/Step/Start",
-    "VCar/EA/TestReport/Step/UnderWay",
-    "VCar/EA/TestReport/Step/Stop",
-]);
+/**
+ * 测试报告事件主题。
+ *
+ * 实测 VCarEA 1.8.4.0826：执行事件由宿主从执行器 broker 转发到主 broker，
+ * 主题统一带 `KY/` 前缀，且当前版本只转发停止类事件（`Run/Stop` 与
+ * `Case/Stop`，后者附带 RunID 与失败计数）；文档里 `VCar/EA/TestReport/...`
+ * （无前缀）的写法及 Start/Step 事件不会到达。订阅整个前缀既能覆盖已知
+ * 事件，也能接住未来版本新增的转发类型。
+ */
+const REPORT_TOPIC_PREFIX = "KY/VCar/EA/TestReport/";
+export const REPORT_TOPIC_SUBSCRIPTION = `${REPORT_TOPIC_PREFIX}#`;
+export const REPORT_TOPICS = Object.freeze({
+    runStop: `${REPORT_TOPIC_PREFIX}Run/Stop`,
+    caseStop: `${REPORT_TOPIC_PREFIX}Case/Stop`,
+});
 
 const RESPONSE_TOPICS = Object.freeze([
-    TOPICS.pingResponse,
     TOPICS.accessResponse,
     TOPICS.projectResponse,
     TOPICS.configurationsResponse,
@@ -213,11 +233,6 @@ function appendReportEvent(topic, payload) {
     });
 }
 
-function normalizeApplicationName(value) {
-    return String(value === undefined || value === null ? "" : value)
-        .trim().replace(/\.exe$/i, "").toLowerCase();
-}
-
 function requireConnected() {
     if (connectionHandle === null || !mqtt.isConnected(connectionHandle)) {
         throw new Error("VCarEA MQTT 连接尚未建立或已经断开");
@@ -228,13 +243,23 @@ function statusDescription(code) {
     return STATUS_TEXT[code] || "未知状态";
 }
 
-function isRetryableReadyError(error) {
+function isRetryableAccessError(error) {
     if (error instanceof ProtocolResponseTimeoutError) {
         return true;
     }
     const code = error && error.code !== undefined
         ? String(error.code).toUpperCase() : "";
     return code === "MQTT_ERROR" || code === "TIMEOUT";
+}
+
+function isProjectConfigurationNotReadyError(error) {
+    if (!(error instanceof VcareaResponseError)
+            || error.responseCode !== 1) {
+        return false;
+    }
+    const message = String(error.responseMessage || "");
+    return message.includes("当前项目") && message.includes("未找到路径")
+        && message.includes("配置");
 }
 
 export function responseTimeout() {
@@ -352,9 +377,9 @@ export function unsubscribe(topic) {
     subscriptions = subscriptions.filter((entry) => entry !== topic);
 }
 
-/** 消费文档声明的测试报告事件，并保留不含大块 Base64 的结果快照。 */
+/** 判断消息是否为宿主转发的测试报告事件，并保留不含大块 Base64 的快照。 */
 export function routeProtocolMessage(message) {
-    if (!message || !REPORT_TOPICS.includes(message.topic)) {
+    if (!message || !String(message.topic).startsWith(REPORT_TOPIC_PREFIX)) {
         return false;
     }
     try {
@@ -383,10 +408,7 @@ export function responseFromMessage(message, responseTopic, requestId) {
     }
     if (code !== 0) {
         const messageText = String(response.Msg || "").trim();
-        throw new Error(
-            `VCarEA 请求 ${requestId} 失败：Code=${code}`
-            + `（${statusDescription(code)}）`
-            + (messageText === "" ? "" : `，${messageText}`));
+        throw new VcareaResponseError(requestId, code, messageText);
     }
     return response;
 }
@@ -432,6 +454,175 @@ export function request(requestTopic,
         responseTopic, requestData.ID, timeoutMs, accept);
 }
 
+/**
+ * 配置工程的 TCF/TBF；工程树尚在后台加载时，仅重试“配置路径未找到”。
+ * 其他业务错误、连接错误和单次应答超时均立即返回，避免重复未知副作用。
+ */
+export function configureProjectConfiguration(operationType,
+                                              configPath,
+                                              constraintUpdate,
+                                              timeoutMs) {
+    if (operationType !== 0 && operationType !== 1) {
+        throw new Error("VCarEA 配置类型只能是 0（TCF）或 1（TBF）");
+    }
+    const path = String(configPath || "").trim();
+    if (path === "") {
+        throw new Error("VCarEA 工程配置路径不能为空");
+    }
+    const overallTimeoutMs = Number(timeoutMs);
+    if (!Number.isInteger(overallTimeoutMs) || overallTimeoutMs < 1) {
+        throw new Error("VCarEA 工程配置就绪超时必须是正整数");
+    }
+
+    const deadline = Date.now() + overallTimeoutMs;
+    let attempts = 0;
+    let lastError = null;
+    while (Date.now() < deadline) {
+        task.checkCancelled();
+        attempts += 1;
+        try {
+            return request(
+                TOPICS.settingRequest,
+                TOPICS.settingResponse,
+                {
+                    OperationType: operationType,
+                    ConstaraintUpdate: Boolean(constraintUpdate),
+                    ConfigPath: path,
+                },
+                Math.min(
+                    responseTimeout(), Math.max(1, deadline - Date.now())));
+        } catch (error) {
+            if (!isProjectConfigurationNotReadyError(error)) {
+                throw error;
+            }
+            lastError = error;
+        }
+        if (attempts % 10 === 0 && Date.now() < deadline) {
+            task.info(
+                `VCarEA 工程配置仍在初始化，已重试 ${attempts} 次：`
+                + lastError.message);
+        }
+        if (Date.now() < deadline) {
+            task.delay(Math.min(
+                PROJECT_CONFIGURATION_RETRY_INTERVAL_MS,
+                Math.max(1, deadline - Date.now())));
+        }
+    }
+    throw new Error(
+        `等待 VCarEA 工程配置就绪超时（${overallTimeoutMs} ms）：`
+        + (lastError === null ? "未执行配置请求" : lastError.message));
+}
+
+/** 配置列表中出现测试配置与测试台配置即视为工程后台初始化完成。 */
+function hasProjectConfigurations(entries) {
+    const suffixes = [".tcf", ".tbf"];
+    return suffixes.every((suffix) => entries.some((entry) =>
+        String(entry && entry.Path ? entry.Path : "")
+            .toLowerCase().endsWith(suffix)));
+}
+
+/**
+ * 轮询配置列表，直到 VCarEA 完成工程后台初始化。
+ *
+ * 打开工程应答早于 VCarEA 后台恢复 TBF 与工程树构造：探测到测试配置和
+ * 测试台配置同时出现在配置列表中即提前返回，替代按固定时长盲等；探测
+ * 失败按间隔重试，超时后抛出最近一次失败原因。
+ */
+export function waitForProjectConfigurations(timeoutMs, probeIntervalMs) {
+    const overallTimeoutMs = Number(timeoutMs);
+    if (!Number.isInteger(overallTimeoutMs) || overallTimeoutMs < 1) {
+        throw new Error("VCarEA 工程就绪超时必须是正整数");
+    }
+    const probeInterval = Math.max(1, Math.floor(Number(probeIntervalMs) || 0));
+    // 单次探测使用独立的短应答超时，保证未就绪时能按间隔持续探测。
+    const probeResponseTimeoutMs = Math.min(
+        responseTimeout(), Math.max(2000, probeInterval * 2));
+    const startedAt = Date.now();
+    const deadline = startedAt + overallTimeoutMs;
+    let configurations = [];
+    let lastError = null;
+    let lastReportAt = startedAt;
+    while (Date.now() < deadline) {
+        task.checkCancelled();
+        try {
+            const response = request(
+                TOPICS.configurationsRequest,
+                TOPICS.configurationsResponse,
+                undefined,
+                Math.min(
+                    probeResponseTimeoutMs,
+                    Math.max(1, deadline - Date.now())));
+            configurations = Array.isArray(response.Data)
+                ? response.Data : [];
+            if (hasProjectConfigurations(configurations)) {
+                return {
+                    Configurations: configurations,
+                    WaitedMs: Date.now() - startedAt,
+                };
+            }
+            lastError = new Error("配置列表中尚未出现测试配置或测试台配置");
+        } catch (error) {
+            lastError = error;
+        }
+        const now = Date.now();
+        if (now - lastReportAt >= PROBE_REPORT_INTERVAL_MS) {
+            lastReportAt = now;
+            task.info(
+                `VCarEA 工程仍在后台初始化（已等待 `
+                + `${Math.round((now - startedAt) / 1000)} 秒）：`
+                + (lastError === null ? "未知原因" : lastError.message));
+        }
+        if (Date.now() < deadline) {
+            task.delay(Math.min(
+                probeInterval, Math.max(1, deadline - Date.now())));
+        }
+    }
+    throw new Error(
+        `等待 VCarEA 工程配置就绪超时（${overallTimeoutMs} ms）：`
+        + (lastError === null ? "未执行配置探测" : lastError.message));
+}
+
+/**
+ * 查询执行 MQTT 端口（可选观察）。
+ *
+ * 实测 VCarEA 1.8.4.0826 对该请求完全不产生应答（包括 Case 执行期间），
+ * 因此只执行一次短超时请求：无应答或业务错误按 `{Port: null, Error}` 返回，
+ * 不视为失败；连接级错误仍向上抛出，避免掩盖真实故障。
+ */
+export function probeExecutionPort(timeoutMs = optionInteger(
+    "ExecutionPortProbeMs", DEFAULT_EXECUTION_PORT_PROBE_MS, 1, 60000)) {
+    try {
+        const response = request(
+            TOPICS.executionPortRequest,
+            TOPICS.executionPortResponse,
+            undefined,
+            timeoutMs);
+        const port = Number(response.Data && response.Data.ExecutionMqttPort);
+        if (Number.isInteger(port) && port >= 0 && port <= 65535) {
+            return {Port: port, Error: null};
+        }
+        return {Port: null, Error: "执行端口应答中的 ExecutionMqttPort 无效"};
+    } catch (error) {
+        if (error instanceof ProtocolResponseTimeoutError
+                || error instanceof VcareaResponseError) {
+            return {Port: null, Error: error.message};
+        }
+        throw error;
+    }
+}
+
+/**
+ * 判断“实验环境未启动”的幂等应答错误。
+ *
+ * 实测停止环境时 VCarEA 可能返回 Code=0 且消息为“未启动实验环境，
+ * 请先启动实验环境”；若某些版本以非零 Code 表达同一语义，清理阶段
+ * 也不应视为失败。
+ */
+export function isEnvironmentNotRunningError(error) {
+    return error instanceof VcareaResponseError
+        && String(error.responseMessage || "").includes("未启动");
+}
+
 function disconnectCurrentConnection() {
     if (connectionHandle === null) {
         return;
@@ -475,26 +666,25 @@ function connectBroker() {
     });
     connectionHandle = result.handle;
     subscriptions = [];
-    // TODO: 文档提供 ExecutionMqttPort 查询，但未说明该端口是否是独立报告
-    // broker，也未提供其认证方式；暂在唯一完整定义的主连接上订阅报告主题。
-    for (const topic of [...RESPONSE_TOPICS, ...REPORT_TOPICS]) {
+    // 报告事件只在主 broker 上转发（主题带 KY/ 前缀）；执行器 broker 仅存于
+    // 执行期间且使用动态凭据，适配器不连接它。
+    for (const topic of [...RESPONSE_TOPICS, REPORT_TOPIC_SUBSCRIPTION]) {
         subscribe(topic, 1);
     }
     task.info(`已连接 VCarEA MQTT 服务：${brokerConfiguration.ServerUri}`);
 }
 
-/** 使用文档的 Ping 接口等待 EA API 就绪。 */
-export function waitForEaReady(checkProcess = null) {
+/** 连接 MQTT，并重试接入握手直到 VCarEA 的业务 API 完成初始化。 */
+export function connectEaApi(checkProcess = null) {
     const timeoutMs = optionInteger(
-        "ReadyTimeoutMs", DEFAULT_READY_TIMEOUT_MS, 1, 1800000);
-    const pingTimeoutMs = optionInteger(
-        "ReadyResponseTimeoutMs",
-        DEFAULT_READY_RESPONSE_TIMEOUT_MS,
+        "AccessReadyTimeoutMs", DEFAULT_ACCESS_READY_TIMEOUT_MS, 1, 1800000);
+    const responseTimeoutMs = optionInteger(
+        "AccessResponseTimeoutMs",
+        DEFAULT_ACCESS_RESPONSE_TIMEOUT_MS,
         1,
         60000);
-    const expectedAppName = normalizeApplicationName(
-        optionString("ReadyAppName", "VCarEA"));
-    const deadline = Date.now() + timeoutMs;
+    const startedAt = Date.now();
+    const deadline = startedAt + timeoutMs;
     let attempts = 0;
     let lastError = null;
     while (Date.now() < deadline) {
@@ -506,17 +696,16 @@ export function waitForEaReady(checkProcess = null) {
         try {
             connectBroker();
             const response = request(
-                TOPICS.pingRequest,
-                TOPICS.pingResponse,
-                {AppName: APPLICATION_NAME},
-                Math.min(pingTimeoutMs, Math.max(1, deadline - Date.now())),
-                (candidate) => normalizeApplicationName(
-                    candidate.Data && candidate.Data.AppName) === expectedAppName);
+                TOPICS.accessRequest,
+                TOPICS.accessResponse,
+                {AccessAPPName: APPLICATION_NAME, Target: "VCarEA"},
+                Math.min(
+                    responseTimeoutMs, Math.max(1, deadline - Date.now())));
             task.info(
-                `VCarEA API 已就绪（${response.Data.AppName}）`);
+                `VCarEA API 客户端登记成功：${response.Msg || "succeed"}`);
             return;
         } catch (error) {
-            if (!isRetryableReadyError(error)) {
+            if (!isRetryableAccessError(error)) {
                 throw error;
             }
             lastError = error;
@@ -526,25 +715,19 @@ export function waitForEaReady(checkProcess = null) {
             }
         }
         if (attempts % 10 === 0 && Date.now() < deadline) {
+            const waitedSeconds = Math.round((Date.now() - startedAt) / 1000);
             task.info(
-                `仍在等待 VCarEA API 就绪，最近错误：${lastError.message}`);
+                `已等待 VCarEA API 接入就绪 ${waitedSeconds} 秒，最近错误：`
+                + lastError.message);
         }
         if (Date.now() < deadline) {
             task.delay(Math.min(
-                READY_POLL_INTERVAL_MS, Math.max(1, deadline - Date.now())));
+                ACCESS_RETRY_INTERVAL_MS, Math.max(1, deadline - Date.now())));
         }
     }
     throw new Error(
-        `等待 VCarEA API 就绪超时（${timeoutMs} ms）`
+        `等待 VCarEA API 接入就绪超时（${timeoutMs} ms）`
         + (lastError === null ? "" : `：${lastError.message}`));
-}
-
-export function registerAccess() {
-    const response = request(
-        TOPICS.accessRequest,
-        TOPICS.accessResponse,
-        {AccessAPPName: APPLICATION_NAME, Target: "VCarEA"});
-    task.info(`VCarEA API 客户端登记成功：${response.Msg || "succeed"}`);
 }
 
 export function isConnected() {

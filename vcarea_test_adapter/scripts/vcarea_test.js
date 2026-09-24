@@ -9,20 +9,24 @@ import {
 } from "./vcarea/connector.js";
 import {
     TOPICS,
+    REPORT_TOPICS,
     cleanupTimeout,
+    connectEaApi,
+    configureProjectConfiguration,
     configureBroker,
     disconnect,
     executionTimeout,
     initializeProtocol,
     isConnected,
+    isEnvironmentNotRunningError,
+    probeExecutionPort,
     receiveMessage,
-    registerAccess,
     reportEventCount,
     reportEventsSince,
     request,
     resetProtocol,
     routeProtocolMessage,
-    waitForEaReady,
+    waitForProjectConfigurations,
 } from "./vcarea/protocol.js";
 import { downloadReport } from "./vcarea/report.js";
 
@@ -34,8 +38,10 @@ const PROJECT_ROOT_URI = "workspace://vcarea-test/project";
 const RESULT_ARTIFACT_URI = "artifact://vcarea-test/execution-result.json";
 const SUPPORTED_REPORT_TYPES = ["html", "pdf", "xlsx", "zip"];
 
-// TODO: 接口文档没有规定启动实验环境后的稳定时间和报告事件收尾时间，
-// 暂分别等待 1000 ms 和 500 ms，可通过节点选项覆盖。
+// TODO: 接口文档没有规定工程后台初始化、启动实验环境后的稳定时间和报告事件
+// 收尾时间，以下均为适配器实测值，可通过节点选项覆盖。
+const DEFAULT_PROJECT_READY_TIMEOUT_MS = 120000;
+const DEFAULT_PROJECT_READY_PROBE_INTERVAL_MS = 500;
 const DEFAULT_ENVIRONMENT_SETTLE_MS = 1000;
 const DEFAULT_REPORT_EVENT_SETTLE_MS = 500;
 
@@ -46,6 +52,7 @@ let projectPath = "";
 let configuredWorkDirectory = "";
 let deviceConfigurationPath = "";
 let projectOpened = false;
+let projectReady = false;
 let environmentStarted = false;
 let activeCasePath = "";
 let activeCaseMayBeOpen = false;
@@ -193,9 +200,10 @@ function parseReportTypes() {
     }
     const legacyFormats = selected.filter((type) => type !== "zip");
     if (legacyFormats.length > 0) {
-        task.warning(
-            `已保留旧版报告选项 ${legacyFormats.join("、")}，`
-            + "但 EA 外部调用接口当前仅能下载 ZIP；本次将发布原生 ZIP 报告");
+        // 接口固定推送 ZIP（实测内含 html/pdf/xlsx），旧版格式将从 ZIP 中提取。
+        task.info(
+            `报告格式 ${legacyFormats.join("、")} 将从 VCarEA ZIP 报告中提取，`
+            + "ZIP 本体一并保留为产物");
     }
     return selected;
 }
@@ -226,6 +234,7 @@ function resetExecutionState() {
     configuredWorkDirectory = "";
     deviceConfigurationPath = "";
     projectOpened = false;
+    projectReady = false;
     environmentStarted = false;
     activeCasePath = "";
     activeCaseMayBeOpen = false;
@@ -251,47 +260,46 @@ function projectRelativePath(uri) {
         ? String(uri).substring(prefix.length) : "";
 }
 
-function uriForAbsoluteInventoryPath(path) {
-    const root = normalizedMatchPath(fs.nativePath(projectRootUri));
-    const candidate = normalizedMatchPath(path);
-    if (candidate === root) {
-        return projectRootUri;
-    }
-    if (!candidate.startsWith(`${root}/`)) {
-        return "";
-    }
-    return `${projectRootUri}/${candidate.substring(root.length + 1)}`;
-}
-
-/** 将项目清单返回的相对或绝对路径解析到本次任务复制的工程目录。 */
-function resolveInventoryUri(path, extension) {
+/**
+ * 将项目清单返回的相对或绝对路径解析到本次任务复制的工程目录。
+ *
+ * 路径归一化仅用于比较；返回值必须来自文件系统枚举，以保留 VCarEA 工程树
+ * 登记的真实大小写。VCarEA 在 Windows 上也会按路径字符串区分大小写。
+ */
+export function resolveInventoryUri(path, extension) {
     const raw = String(path || "").trim();
     if (raw === "") {
         throw new Error(`VCarEA 返回了空的 ${extension} 路径`);
     }
-    if (isAbsoluteNativePath(raw)) {
-        const mapped = uriForAbsoluteInventoryPath(raw);
-        if (mapped !== "" && fs.exists(mapped)) {
-            return mapped;
-        }
-    } else {
-        const relative = raw.replace(/\\/g, "/").replace(/^\.\//, "")
-            .replace(/^\/+/, "");
-        const direct = `${projectRootUri}/${relative}`;
-        if (fs.exists(direct)) {
-            return direct;
-        }
-    }
 
     const target = normalizedMatchPath(raw);
-    const targetName = baseName(target);
-    const matches = projectFiles(extension).filter((entry) => {
-        const relative = normalizedMatchPath(projectRelativePath(entry.uri));
-        return relative === target || relative.endsWith(`/${target}`)
-            || target.endsWith(`/${relative}`) || baseName(relative) === targetName;
-    });
+    const root = normalizedMatchPath(fs.nativePath(projectRootUri));
+    let relativeTarget = target;
+    if (isAbsoluteNativePath(raw) && target.startsWith(`${root}/`)) {
+        relativeTarget = target.substring(root.length + 1);
+    }
+
+    const candidates = projectFiles(extension).map((entry) => ({
+        entry,
+        relative: normalizedMatchPath(projectRelativePath(entry.uri)),
+        native: normalizedMatchPath(fs.nativePath(entry.uri)),
+    }));
+    const exactMatches = candidates.filter((candidate) =>
+        candidate.native === target || candidate.relative === relativeTarget);
+    if (exactMatches.length === 1) {
+        return exactMatches[0].entry.uri;
+    }
+    if (exactMatches.length > 1) {
+        throw new Error(`项目路径 [${raw}] 匹配到多个本地文件`);
+    }
+
+    const targetName = baseName(relativeTarget);
+    const matches = candidates.filter((candidate) =>
+        candidate.relative.endsWith(`/${relativeTarget}`)
+        || relativeTarget.endsWith(`/${candidate.relative}`)
+        || baseName(candidate.relative) === targetName);
     if (matches.length === 1) {
-        return matches[0].uri;
+        return matches[0].entry.uri;
     }
     if (matches.length > 1) {
         throw new Error(`项目路径 [${raw}] 匹配到多个本地文件`);
@@ -421,16 +429,51 @@ function updateVariables() {
     });
 }
 
-function drainReportEvents() {
+/**
+ * 等待当前 Case 执行结束。
+ *
+ * 实测：Case/Execute 应答只表示执行已启动，执行结束由宿主转发的
+ * Run/Stop 或 Case/Stop 事件表示（本版本不转发 Start 类事件）。
+ * 先扫描缓冲区里已有的停事件（极短用例的事件可能早于本函数到达），
+ * 再继续接收；收到首个停事件后保留 ReportEventSettleMs 收尾窗口
+ * 吸纳迟到事件；超过 timeoutMs 仍未收到停事件才报错。
+ */
+function waitForCaseStop(startIndex, timeoutMs) {
     const settleMs = optionInteger(
         "ReportEventSettleMs", DEFAULT_REPORT_EVENT_SETTLE_MS, 0, 60000);
-    const deadline = Date.now() + settleMs;
+    const deadline = Date.now() + timeoutMs;
+    let stopObservedAt = 0;
+    let scanned = startIndex;
+    const scanBufferedEvents = () => {
+        const snapshot = reportEventsSince(scanned);
+        scanned += snapshot.DroppedEventCount + snapshot.Events.length;
+        for (const event of snapshot.Events) {
+            if (stopObservedAt === 0
+                    && (event.Topic === REPORT_TOPICS.caseStop
+                        || event.Topic === REPORT_TOPICS.runStop)) {
+                stopObservedAt = Date.now();
+            }
+        }
+    };
+    scanBufferedEvents();
     while (Date.now() < deadline) {
         task.checkCancelled();
-        const message = receiveMessage(Math.max(1, Math.min(50, deadline - Date.now())));
-        if (message !== null && message !== undefined) {
-            routeProtocolMessage(message);
+        if (stopObservedAt > 0 && Date.now() - stopObservedAt >= settleMs) {
+            return;
         }
+        const message = receiveMessage(Math.max(
+            1, Math.min(50, deadline - Date.now())));
+        if (message === null || message === undefined) {
+            continue;
+        }
+        if (routeProtocolMessage(message)) {
+            scanBufferedEvents();
+        }
+    }
+    if (stopObservedAt === 0) {
+        throw new Error(
+            `等待 VCarEA Case 执行完成超时（${timeoutMs} ms）：`
+            + "未收到 Run/Stop 或 Case/Stop 报告事件");
     }
 }
 
@@ -445,7 +488,7 @@ function evaluateCaseStatus(events) {
     for (const event of events) {
         const data = event && event.Data && typeof event.Data === "object"
             ? event.Data : {};
-        if (event.Topic === "VCar/EA/TestReport/Step/Stop"
+        if (event.Topic.endsWith("Step/Stop")
                 && typeof data.IsPass === "boolean") {
             observedVerdict = true;
             failed = failed || !data.IsPass;
@@ -594,7 +637,7 @@ export function prepare(projectPackage) {
     task.progress(5);
 }
 
-/** 阶段 2：按旧版流程探测 Connector 服务，必要时启动 VCarEA。 */
+/** 阶段 2：默认启动 VCarEA；显式附加时复用已有实例。 */
 export function launch() {
     requirePrepared();
     const result = launchVcarea(optionBoolean("AttachExisting", false));
@@ -611,22 +654,33 @@ export function readMqttConfig() {
     return configuration;
 }
 
-/** 阶段 4：按文档连接 MQTT、Ping 等待 EA 就绪并登记 API 客户端。 */
+/** 阶段 4：连接 MQTT，并等待 VCarEA 完成 API 客户端登记。 */
 export function connect() {
     requirePrepared();
-    waitForEaReady(ensureVcareaProcessRunning);
-    registerAccess();
+    ensureVcareaProcessRunning();
+    connectEaApi(ensureVcareaProcessRunning);
     task.progress(25);
 }
 
-/** 阶段 5：打开工程，查询并配置 TCF/TBF，然后确定待执行 Case。 */
+/** 阶段 5：打开工程，等待后台初始化完成，配置 TCF/TBF，然后确定待执行 Case。 */
 export function configure() {
     requirePrepared();
     if (!isConnected()) {
         throw new Error("配置工程前必须先连接 VCarEA MQTT 服务");
     }
+    const readyTimeoutMs = optionInteger(
+        "ProjectReadyTimeoutMs",
+        DEFAULT_PROJECT_READY_TIMEOUT_MS,
+        1,
+        1800000);
+    const probeIntervalMs = optionInteger(
+        "ProjectReadyProbeIntervalMs",
+        DEFAULT_PROJECT_READY_PROBE_INTERVAL_MS,
+        100,
+        10000);
     // 请求超时时无法确认 EA 是否已经打开工程，因此发送前就进入待清理状态。
     projectOpened = true;
+    projectReady = false;
     const opened = request(
         TOPICS.projectRequest,
         TOPICS.projectResponse,
@@ -635,34 +689,46 @@ export function configure() {
             ProjectPath: projectPath,
             ConstaraintUpdate: optionBoolean("ConstraintUpdate", true),
         });
-    const configurationsResponse = request(
-        TOPICS.configurationsRequest,
-        TOPICS.configurationsResponse,
-        undefined);
+    // 打开工程应答早于 VCarEA 后台恢复 TBF 与工程树构造：轮询配置列表，
+    // 探测到两种配置同时可见才继续，替代按固定时长盲等。
+    task.info(
+        `等待 VCarEA 完成工程后台初始化（最长 ${readyTimeoutMs} ms）`);
+    const ready = waitForProjectConfigurations(
+        readyTimeoutMs, probeIntervalMs);
+    projectReady = true;
+    task.info(`VCarEA 工程后台初始化完成（等待 ${ready.WaitedMs} ms）`);
     const casesResponse = request(
         TOPICS.casesRequest,
         TOPICS.casesResponse,
         undefined);
     const openedConfigurations = responseArray(opened, "Configurations");
-    const queriedConfigurations = responseArray(configurationsResponse, "");
+    const configurations = ready.Configurations.length > 0
+        ? ready.Configurations : openedConfigurations;
     const openedCases = responseArray(opened, "Cases");
     const queriedCases = responseArray(casesResponse, "");
-    const configurations = queriedConfigurations.length > 0
-        ? queriedConfigurations : openedConfigurations;
     const cases = queriedCases.length > 0 ? queriedCases : openedCases;
 
     const tcf = chooseConfiguration(configurations, ".tcf", "测试配置");
     const tbf = chooseConfiguration(configurations, ".tbf", "测试台配置");
-    request(TOPICS.settingRequest, TOPICS.settingResponse, {
-        OperationType: 0,
-        ConstaraintUpdate: optionBoolean("ConstraintUpdate", true),
-        ConfigPath: tcf.NativePath,
-    });
-    request(TOPICS.settingRequest, TOPICS.settingResponse, {
-        OperationType: 1,
-        ConstaraintUpdate: optionBoolean("ConstraintUpdate", true),
-        ConfigPath: tbf.NativePath,
-    });
+    const constraintUpdate = optionBoolean("ConstraintUpdate", true);
+    // 就绪后配置请求几乎总是一次成功，仍保留瞬态重试作为兜底。
+    const configurationDeadline = Date.now() + readyTimeoutMs;
+    configureProjectConfiguration(
+        0,
+        tcf.NativePath,
+        constraintUpdate,
+        Math.max(1, configurationDeadline - Date.now()));
+    const remainingReadyMs = configurationDeadline - Date.now();
+    if (remainingReadyMs <= 0) {
+        throw new Error(
+            `等待 VCarEA 工程配置就绪超时（${readyTimeoutMs} ms）：`
+            + "TCF 已配置，但没有剩余时间配置 TBF");
+    }
+    configureProjectConfiguration(
+        1,
+        tbf.NativePath,
+        constraintUpdate,
+        remainingReadyMs);
     testConfigurationPath = tcf.NativePath;
     testbenchConfigurationPath = tbf.NativePath;
     selectedCases = selectCases(cases);
@@ -672,34 +738,36 @@ export function configure() {
     task.progress(45);
 }
 
-/** 阶段 6：启动实验环境，并使用文档中的执行端口查询确认 API 可响应。 */
+/** 阶段 6：启动实验环境；启动应答即为就绪信号（实测同步加载 XIL 环境）。 */
 export function startMeasurement() {
     if (!projectOpened) {
         throw new Error("启动实验环境前必须先打开 VCarEA 工程");
     }
     // 请求超时时无法确认环境是否已经启动，因此发送前就进入待清理状态。
     environmentStarted = true;
+    const startedAt = Date.now();
     request(
         TOPICS.environmentRequest,
         TOPICS.environmentResponse,
         {OperationType: 0});
+    task.info(
+        `VCarEA 实验环境已启动（应答耗时 ${Date.now() - startedAt} ms）`);
 
     const settleMs = optionInteger(
         "EnvironmentSettleMs", DEFAULT_ENVIRONMENT_SETTLE_MS, 0, 60000);
     if (settleMs > 0) {
         task.delay(settleMs);
     }
-    // 文档没有“实验环境状态”接口；这里只能以启动应答成功且业务 API
-    // 仍可查询为就绪依据，ExecutionMqttPort=0 在尚未执行时是合法值。
-    const status = request(
-        TOPICS.executionPortRequest,
-        TOPICS.executionPortResponse,
-        undefined);
-    const port = Number(status.Data && status.Data.ExecutionMqttPort);
-    if (!Number.isInteger(port) || port < 0 || port > 65535) {
-        throw new Error("VCarEA 执行端口查询返回无效数据");
+    // 实测 1.8.4.0826 对执行端口查询接口无任何应答：只做一次有界观察并
+    // 记录，不作为环境就绪或失败判据（环境启动应答即为就绪信号）。
+    const probe = probeExecutionPort();
+    if (probe.Port !== null) {
+        task.info(`VCarEA 执行 MQTT 端口：${probe.Port}`);
+    } else {
+        task.info(
+            "VCarEA 执行端口查询未返回端口（实测该接口常无应答，"
+            + "不作为就绪判据）：" + (probe.Error || ""));
     }
-    task.info(`VCarEA 实验环境已启动，当前执行 MQTT 端口：${port}`);
     task.progress(55);
 }
 
@@ -727,12 +795,15 @@ export function execute() {
                 {OperationType: 0, CasePath: activeCasePath});
             task.info(
                 `执行 VCarEA Case ${index + 1}/${selectedCases.length}：${selected.Path}`);
+            // Case/Execute 应答与执行结束事件共享单个 Case 的执行超时预算。
+            const caseDeadline = Date.now() + executionTimeout();
             response = request(
                 TOPICS.caseExecuteRequest,
                 TOPICS.caseExecuteResponse,
                 executionRequestData(activeCasePath),
-                executionTimeout());
-            drainReportEvents();
+                Math.max(1, caseDeadline - Date.now()));
+            // Case/Execute 应答只表示执行已启动；执行结束由停止事件判定。
+            waitForCaseStop(eventStart, Math.max(1, caseDeadline - Date.now()));
         } catch (error) {
             executionFailed = true;
             throw error;
@@ -777,7 +848,8 @@ export function collectArtifacts() {
         }
         reportIndex += 1;
         try {
-            const downloaded = downloadReport(result.ReportPath, reportIndex);
+            const downloaded = downloadReport(
+                result.ReportPath, reportIndex, reportTypes);
             reportDownloads.push({
                 Case: result.Case,
                 ReportPath: result.ReportPath,
@@ -811,6 +883,29 @@ function cleanupCall(description, callback) {
     }
 }
 
+/**
+ * 停止实验环境。
+ *
+ * 实测 VCarEA 在环境未运行时返回 Code=0 且消息为“未启动实验环境，
+ * 请先启动实验环境”；若某些版本以非零 Code 表达同一语义，
+ * 同样按幂等成功处理。
+ */
+function stopEnvironment(timeoutMs) {
+    try {
+        request(
+            TOPICS.environmentRequest,
+            TOPICS.environmentResponse,
+            {OperationType: 1},
+            timeoutMs);
+    } catch (error) {
+        if (isEnvironmentNotRunningError(error)) {
+            task.info("VCarEA 实验环境此前未启动（按幂等成功处理）");
+            return;
+        }
+        throw error;
+    }
+}
+
 /** 清理阶段：关闭测试资源、MQTT、Connector SDK 和本次启动的宿主。 */
 export function cleanup() {
     const timeoutMs = cleanupTimeout();
@@ -822,14 +917,20 @@ export function cleanup() {
             cleanupCall("关闭活动 VCarEA Case", () => closeActiveCase(timeoutMs));
         }
         if (environmentStarted) {
-            cleanupCall("停止 VCarEA 实验环境", () => request(
-                TOPICS.environmentRequest,
-                TOPICS.environmentResponse,
-                {OperationType: 1},
-                timeoutMs));
+            cleanupCall("停止 VCarEA 实验环境",
+                        () => stopEnvironment(timeoutMs));
             environmentStarted = false;
         }
         if (projectOpened) {
+            if (!projectReady) {
+                // 工程尚未确认就绪：先按清理应答超时做一次有界探测，让
+                // VCarEA 完成工程树稳定后再关闭，避免打开后立即关闭；
+                // 探测失败不阻塞关闭，仅记录警告。
+                cleanupCall(
+                    "等待 VCarEA 工程就绪",
+                    () => waitForProjectConfigurations(
+                        timeoutMs, DEFAULT_PROJECT_READY_PROBE_INTERVAL_MS));
+            }
             cleanupCall("关闭 VCarEA 工程", () => request(
                 TOPICS.projectRequest,
                 TOPICS.projectResponse,
@@ -840,6 +941,7 @@ export function cleanup() {
                 },
                 timeoutMs));
             projectOpened = false;
+            projectReady = false;
         }
         cleanupCall("断开 VCarEA MQTT", disconnect);
     }
