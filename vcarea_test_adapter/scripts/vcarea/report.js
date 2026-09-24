@@ -3,10 +3,14 @@ import * as task from "@atech/task";
 
 import {
     TOPICS,
+    busyRejectionMessage,
+    busyRetryInterval,
     createRequest,
     publishJson,
     receiveMessage,
+    reportBusyRetry,
     reportTimeout,
+    request,
     responseFromMessage,
     routeProtocolMessage,
     subscribe,
@@ -199,10 +203,12 @@ export function downloadReport(reportPath, reportIndex, requestedTypes = []) {
         throw new Error("VCarEA 报告序号必须是正整数");
     }
     const artifactUri = `artifact://vcarea-test/report-${index}.zip`;
-    const downloadRequest = createRequest({ReportPath: reportPath});
-    publishJson(TOPICS.reportDownloadRequest, downloadRequest);
-    const downloadResponse = waitForDownloadResponse(
-        downloadRequest.ID, reportTimeout());
+    // 下载请求采用通用请求包装：宿主接口忙时自动重发，直到收到应答。
+    const downloadResponse = request(
+        TOPICS.reportDownloadRequest,
+        TOPICS.reportDownloadResponse,
+        {ReportPath: reportPath},
+        reportTimeout());
     const metadata = reportMetadata(downloadResponse);
     subscribe(metadata.topic, 1);
 
@@ -211,6 +217,7 @@ export function downloadReport(reportPath, reportIndex, requestedTypes = []) {
     const pushRequest = createRequest({PushVoucher: metadata.voucher});
     const deadline = Date.now() + reportTimeout();
     let pushAcknowledged = false;
+    const busyState = {count: 0, reportedAt: 0};
     try {
         // 必须先订阅报告主题再请求推送，避免首包在订阅完成前丢失。
         publishJson(TOPICS.reportPushRequest, pushRequest);
@@ -225,6 +232,18 @@ export function downloadReport(reportPath, reportIndex, requestedTypes = []) {
                 continue;
             }
             if (message.topic === TOPICS.reportPushResponse) {
+                const busyMessage = busyRejectionMessage(
+                    message, TOPICS.reportPushResponse);
+                if (busyMessage !== null) {
+                    // 宿主同一时刻只处理一个接口：忙拒绝后重发同一推送请求，
+                    // 已收到的分包按 index 去重，重复推送也不会污染结果。
+                    reportBusyRetry(
+                        busyState, TOPICS.reportPushResponse, busyMessage);
+                    publishJson(TOPICS.reportPushRequest, pushRequest);
+                    task.delay(Math.max(1, Math.min(
+                        busyRetryInterval(), deadline - Date.now())));
+                    continue;
+                }
                 const response = responseFromMessage(
                     message, TOPICS.reportPushResponse, pushRequest.ID);
                 if (response !== null) {
@@ -283,25 +302,4 @@ export function downloadReport(reportPath, reportIndex, requestedTypes = []) {
             task.warning(`退订 VCarEA 报告主题失败：${error.message}`);
         }
     }
-}
-
-function waitForDownloadResponse(requestId, timeoutMs) {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-        task.checkCancelled();
-        const message = receiveMessage(Math.max(
-            1, Math.min(RECEIVE_POLL_INTERVAL_MS, deadline - Date.now())));
-        if (message === null || message === undefined) {
-            continue;
-        }
-        if (routeProtocolMessage(message)) {
-            continue;
-        }
-        const response = responseFromMessage(
-            message, TOPICS.reportDownloadResponse, requestId);
-        if (response !== null) {
-            return response;
-        }
-    }
-    throw new Error(`等待 VCarEA 报告下载应答超时（${requestId}）`);
 }

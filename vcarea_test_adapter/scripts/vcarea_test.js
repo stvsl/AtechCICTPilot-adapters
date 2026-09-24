@@ -11,6 +11,7 @@ import {
     TOPICS,
     REPORT_TOPICS,
     cleanupTimeout,
+    configureResponseTimeout,
     connectEaApi,
     configureProjectConfiguration,
     configureBroker,
@@ -64,6 +65,16 @@ let reportTypes = [];
 let executionResults = [];
 let reportDownloads = [];
 let collectionErrors = [];
+/**
+ * 工程文件清单缓存（按扩展名）。
+ *
+ * 实测：VCarEA 工程可包含上千个 Case，而 `fs.list` 每次都会递归遍历整个工程
+ * 目录并为每个条目做一次文件系统查询；逐条路径解析再枚举一次会把配置阶段
+ * 拖到分钟级（2026-09-24 实测 1363 个 Case 的任务在“打开工程并配置测试环境”
+ * 阶段耗尽 600 秒阶段超时），因此按扩展名缓存一次枚举与归一化结果。
+ * 工程目录在任务内只读，缓存不需要失效。
+ */
+const projectFileCache = new Map();
 
 function optionInteger(name, fallback, minimum, maximum) {
     const value = Number(task.option(name, fallback));
@@ -208,10 +219,59 @@ function parseReportTypes() {
     return selected;
 }
 
-function projectFiles(extension) {
+/**
+ * 工程文件清单（按扩展名缓存）。
+ *
+ * 返回候选数组与两张归一化路径索引：候选数组用于名称回退匹配，索引表用于
+ * 路径精确匹配，避免逐条路径扫描整个清单。
+ *
+ * 实测：VCarEA 工程可包含上千个 Case，而 `fs.list` 每次都会递归遍历整个
+ * 工程目录并为每个条目做一次文件系统查询；既不缓存枚举、又逐条扫描清单时，
+ * 配置阶段会耗尽阶段超时（2026-09-24 实测 1363 个 Case 的任务触发 600 秒
+ * 超时）。工程目录在任务内只读，缓存不需要失效。
+ */
+function projectInventory(extension) {
     const suffix = extension.toLowerCase();
-    return fs.list(projectRootUri, true).filter((entry) =>
-        entry.type === "file" && entry.name.toLowerCase().endsWith(suffix));
+    let inventory = projectFileCache.get(suffix);
+    if (inventory === undefined) {
+        const candidates = [];
+        const byNativePath = new Map();
+        const byRelativePath = new Map();
+        for (const entry of fs.list(projectRootUri, true)) {
+            if (entry.type !== "file"
+                    || !entry.name.toLowerCase().endsWith(suffix)) {
+                continue;
+            }
+            const nativePath = fs.nativePath(entry.uri);
+            const candidate = {
+                entry,
+                nativePath,
+                native: normalizedMatchPath(nativePath),
+                relative: normalizedMatchPath(
+                    projectRelativePath(entry.uri)),
+            };
+            candidates.push(candidate);
+            appendInventoryIndex(byNativePath, candidate.native, candidate);
+            appendInventoryIndex(byRelativePath, candidate.relative, candidate);
+        }
+        inventory = {candidates, byNativePath, byRelativePath};
+        projectFileCache.set(suffix, inventory);
+    }
+    return inventory;
+}
+
+function appendInventoryIndex(index, key, candidate) {
+    const bucket = index.get(key);
+    if (bucket === undefined) {
+        index.set(key, [candidate]);
+        return;
+    }
+    bucket.push(candidate);
+}
+
+function projectFiles(extension) {
+    return projectInventory(extension).candidates
+        .map((candidate) => candidate.entry);
 }
 
 function requireSingleProjectFile() {
@@ -246,6 +306,7 @@ function resetExecutionState() {
     executionResults = [];
     reportDownloads = [];
     collectionErrors = [];
+    projectFileCache.clear();
 }
 
 function requirePrepared() {
@@ -261,12 +322,12 @@ function projectRelativePath(uri) {
 }
 
 /**
- * 将项目清单返回的相对或绝对路径解析到本次任务复制的工程目录。
+ * 将项目清单返回的相对或绝对路径解析为工程清单中的候选条目。
  *
- * 路径归一化仅用于比较；返回值必须来自文件系统枚举，以保留 VCarEA 工程树
+ * 路径归一化仅用于比较；返回的条目来自文件系统枚举，保留 VCarEA 工程树
  * 登记的真实大小写。VCarEA 在 Windows 上也会按路径字符串区分大小写。
  */
-export function resolveInventoryUri(path, extension) {
+function resolveInventoryCandidate(path, extension) {
     const raw = String(path || "").trim();
     if (raw === "") {
         throw new Error(`VCarEA 返回了空的 ${extension} 路径`);
@@ -279,27 +340,30 @@ export function resolveInventoryUri(path, extension) {
         relativeTarget = target.substring(root.length + 1);
     }
 
-    const candidates = projectFiles(extension).map((entry) => ({
-        entry,
-        relative: normalizedMatchPath(projectRelativePath(entry.uri)),
-        native: normalizedMatchPath(fs.nativePath(entry.uri)),
-    }));
-    const exactMatches = candidates.filter((candidate) =>
-        candidate.native === target || candidate.relative === relativeTarget);
+    const inventory = projectInventory(extension);
+    const exactMatches = [];
+    for (const candidate of inventory.byNativePath.get(target) || []) {
+        exactMatches.push(candidate);
+    }
+    for (const candidate of inventory.byRelativePath.get(relativeTarget) || []) {
+        if (!exactMatches.includes(candidate)) {
+            exactMatches.push(candidate);
+        }
+    }
     if (exactMatches.length === 1) {
-        return exactMatches[0].entry.uri;
+        return exactMatches[0];
     }
     if (exactMatches.length > 1) {
         throw new Error(`项目路径 [${raw}] 匹配到多个本地文件`);
     }
 
     const targetName = baseName(relativeTarget);
-    const matches = candidates.filter((candidate) =>
+    const matches = inventory.candidates.filter((candidate) =>
         candidate.relative.endsWith(`/${relativeTarget}`)
         || relativeTarget.endsWith(`/${candidate.relative}`)
         || baseName(candidate.relative) === targetName);
     if (matches.length === 1) {
-        return matches[0].entry.uri;
+        return matches[0];
     }
     if (matches.length > 1) {
         throw new Error(`项目路径 [${raw}] 匹配到多个本地文件`);
@@ -307,8 +371,14 @@ export function resolveInventoryUri(path, extension) {
     throw new Error(`无法在任务工程目录中解析 VCarEA 路径 [${raw}]`);
 }
 
+/** 解析工程内路径，返回文件系统枚举得到的文件 URI。 */
+export function resolveInventoryUri(path, extension) {
+    return resolveInventoryCandidate(path, extension).entry.uri;
+}
+
 function inventoryPaths(entries, extension) {
     const paths = [];
+    const seenNativePaths = new Set();
     for (const entry of entries) {
         if (!entry || typeof entry !== "object") {
             continue;
@@ -317,27 +387,27 @@ function inventoryPaths(entries, extension) {
         if (path === "" || !path.toLowerCase().endsWith(extension)) {
             continue;
         }
-        const uri = resolveInventoryUri(path, extension);
-        const nativePath = fs.nativePath(uri);
-        if (!paths.some((item) =>
-            normalizedMatchPath(item.NativePath) === normalizedMatchPath(nativePath))) {
-            paths.push({
-                Path: path,
-                Uri: uri,
-                NativePath: nativePath,
-                Name: baseName(path),
-            });
+        const candidate = resolveInventoryCandidate(path, extension);
+        if (seenNativePaths.has(candidate.native)) {
+            continue;
         }
+        seenNativePaths.add(candidate.native);
+        paths.push({
+            Path: path,
+            Uri: candidate.entry.uri,
+            NativePath: candidate.nativePath,
+            Name: baseName(path),
+        });
     }
     return paths;
 }
 
 function localProjectPaths(extension) {
-    return projectFiles(extension).map((entry) => ({
-        Path: projectRelativePath(entry.uri),
-        Uri: entry.uri,
-        NativePath: fs.nativePath(entry.uri),
-        Name: entry.name,
+    return projectInventory(extension).candidates.map((candidate) => ({
+        Path: projectRelativePath(candidate.entry.uri),
+        Uri: candidate.entry.uri,
+        NativePath: candidate.nativePath,
+        Name: candidate.entry.name,
     }));
 }
 
@@ -681,6 +751,10 @@ export function configure() {
     // 请求超时时无法确认 EA 是否已经打开工程，因此发送前就进入待清理状态。
     projectOpened = true;
     projectReady = false;
+    // 本阶段宿主带后台恢复处理请求（打开工程与 TBF 配置实测 5~35 秒；
+    // 恢复窗口内业务请求会被“其他接口正在工作”拒绝并自动重发），因此
+    // 打开工程、就绪后首次查询与 TCF/TBF 配置统一使用阶段专用应答超时。
+    const stageTimeoutMs = configureResponseTimeout();
     const opened = request(
         TOPICS.projectRequest,
         TOPICS.projectResponse,
@@ -688,7 +762,8 @@ export function configure() {
             OperationType: 0,
             ProjectPath: projectPath,
             ConstaraintUpdate: optionBoolean("ConstraintUpdate", true),
-        });
+        },
+        stageTimeoutMs);
     // 打开工程应答早于 VCarEA 后台恢复 TBF 与工程树构造：轮询配置列表，
     // 探测到两种配置同时可见才继续，替代按固定时长盲等。
     task.info(
@@ -700,7 +775,8 @@ export function configure() {
     const casesResponse = request(
         TOPICS.casesRequest,
         TOPICS.casesResponse,
-        undefined);
+        undefined,
+        stageTimeoutMs);
     const openedConfigurations = responseArray(opened, "Configurations");
     const configurations = ready.Configurations.length > 0
         ? ready.Configurations : openedConfigurations;

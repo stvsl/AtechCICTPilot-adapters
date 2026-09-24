@@ -24,6 +24,20 @@ const PROJECT_CONFIGURATION_RETRY_INTERVAL_MS = 1000;
 const PROBE_REPORT_INTERVAL_MS = 3000;
 const RECEIVE_POLL_INTERVAL_MS = 250;
 
+// 实测 VCarEA 1.8.4.0826：宿主同一时刻只处理一个业务接口，并发请求会被立即
+// 拒绝（`Code=1`、消息“其他接口正在工作，请稍后重试！”），且该拒绝应答不复用
+// 请求 ID。打开工程应答后宿主仍在后台恢复 TBF 与加载 XIL 环境（实测窗口最长
+// 约 33 秒），期间所有业务请求都会被这样拒绝，因此识别到该应答后必须稍后重发，
+// 而不是一直等待到超时。
+const BUSY_REJECTION_TEXT = "其他接口正在工作";
+const DEFAULT_BUSY_RETRY_INTERVAL_MS = 1000;
+const BUSY_RETRY_REPORT_INTERVAL_MS = 5000;
+
+// TODO: 接口文档没有规定“打开工程并配置测试环境”阶段单次应答上限：实测打开
+// 工程应答耗时 5~35 秒（宿主把后台恢复计入应答时间时更久），TBF 配置同步加载
+// XIL 环境需 16~24 秒，因此该阶段的单次请求默认给到 60 秒。
+const DEFAULT_CONFIGURE_RESPONSE_TIMEOUT_MS = 60000;
+
 // TODO: 接口文档未定义执行端口探测超时；实测 VCarEA 1.8.4.0826 对
 // `Execution/MqttPort` 查询完全不产生应答，因此只做一次有界观察。
 const DEFAULT_EXECUTION_PORT_PROBE_MS = 3000;
@@ -36,6 +50,23 @@ class ProtocolResponseTimeoutError extends Error {
     constructor(message) {
         super(message);
         this.name = "ProtocolResponseTimeoutError";
+    }
+}
+
+/**
+ * 宿主“接口忙”拒绝错误。
+ *
+ * 宿主对并发请求的拒绝应答不回显请求 ID，适配器无法按 ID 匹配，只能按
+ * 状态代码与消息文本识别；重发直到超出本次请求超时仍被拒绝时抛出本错误，
+ * 使失败原因显示为“接口忙”而不是容易误导的“无应答”。
+ */
+class VcareaBusyError extends Error {
+    constructor(responseTopic, requestId, attempts, hostMessage) {
+        super(`VCarEA 接口忙，本次请求被拒绝 ${attempts} 次：${hostMessage}`
+            + `（${responseTopic}；${requestId}）`);
+        this.name = "VcareaBusyError";
+        this.responseTopic = responseTopic;
+        this.hostMessage = hostMessage;
     }
 }
 
@@ -244,7 +275,8 @@ function statusDescription(code) {
 }
 
 function isRetryableAccessError(error) {
-    if (error instanceof ProtocolResponseTimeoutError) {
+    if (error instanceof ProtocolResponseTimeoutError
+            || error instanceof VcareaBusyError) {
         return true;
     }
     const code = error && error.code !== undefined
@@ -252,7 +284,18 @@ function isRetryableAccessError(error) {
     return code === "MQTT_ERROR" || code === "TIMEOUT";
 }
 
-function isProjectConfigurationNotReadyError(error) {
+/**
+ * 判断工程配置请求是否属于可重试的瞬态失败。
+ *
+ * 以下两种应答都说明宿主尚未准备好接受配置，且都没有产生配置副作用，
+ * 重发是安全的：
+ * 1. 工程树仍在后台恢复时返回的“当前项目未找到路径…的测试配置”业务错误；
+ * 2. 宿主正在处理其它接口时返回的忙拒绝（见 BUSY_REJECTION_TEXT）。
+ */
+function isProjectConfigurationRetryableError(error) {
+    if (error instanceof VcareaBusyError) {
+        return true;
+    }
     if (!(error instanceof VcareaResponseError)
             || error.responseCode !== 1) {
         return false;
@@ -265,6 +308,27 @@ function isProjectConfigurationNotReadyError(error) {
 export function responseTimeout() {
     return optionInteger(
         "ResponseTimeoutMs", DEFAULT_RESPONSE_TIMEOUT_MS, 1, 1800000);
+}
+
+/**
+ * “打开工程并配置测试环境”阶段的单次请求应答超时。
+ *
+ * 打开工程应答可能包含宿主后台恢复（实测 5~35 秒），TBF 配置同步加载
+ * XIL 环境（实测 16~24 秒），宿主忙拒绝重发也要在该窗口内完成，因此本
+ * 阶段的打开工程、工程配置与就绪后首次查询统一使用该超时。
+ */
+export function configureResponseTimeout() {
+    return optionInteger(
+        "ConfigureResponseTimeoutMs",
+        DEFAULT_CONFIGURE_RESPONSE_TIMEOUT_MS,
+        1,
+        1800000);
+}
+
+/** 宿主忙拒绝后的重发间隔；仅调试或极端主机性能下需要调整。 */
+export function busyRetryInterval() {
+    return optionInteger(
+        "BusyRetryIntervalMs", DEFAULT_BUSY_RETRY_INTERVAL_MS, 100, 60000);
 }
 
 export function executionTimeout() {
@@ -413,12 +477,59 @@ export function responseFromMessage(message, responseTopic, requestId) {
     return response;
 }
 
+/**
+ * 提取宿主的“接口忙”拒绝应答。
+ *
+ * 实测 1.8.4.0826：并发请求会立即收到 `Code=1` 且消息为“其他接口正在工作，
+ * 请稍后重试！”的应答，该应答的 `ID` 由宿主重新生成，与请求完全不匹配，
+ * 因此不能按 ID 匹配（按 ID 匹配会把拒绝当成无关消息而一直等到超时）。
+ * 返回非空字符串表示命中忙拒绝，调用方应稍后重发同一请求。
+ */
+export function busyRejectionMessage(message, responseTopic) {
+    if (!message || message.topic !== responseTopic) {
+        return null;
+    }
+    let response = null;
+    try {
+        response = parseJsonBytes(
+            messagePayload(message), `VCarEA 应答 ${responseTopic}`);
+    } catch (_) {
+        return null;
+    }
+    if (Number(response.Code) !== 1) {
+        return null;
+    }
+    const messageText = String(response.Msg || "").trim();
+    return messageText.includes(BUSY_REJECTION_TEXT) ? messageText : null;
+}
+
+/**
+ * 记录忙拒绝重试进度：首次命中与之后的报告间隔各输出一次，避免刷屏。
+ *
+ * @param {{count: number, reportedAt: number}} state 调用方持有的重试状态。
+ */
+export function reportBusyRetry(state, responseTopic, hostMessage) {
+    state.count += 1;
+    const now = Date.now();
+    if (state.count > 1
+            && now - state.reportedAt < BUSY_RETRY_REPORT_INTERVAL_MS) {
+        return;
+    }
+    state.reportedAt = now;
+    task.info(
+        `VCarEA 正忙，${responseTopic} 第 ${state.count} 次被拒绝：`
+        + `${hostMessage}（稍后自动重发）`);
+}
+
 export function waitForResponse(responseTopic,
                                 requestId,
                                 timeoutMs = responseTimeout(),
-                                accept = null) {
+                                accept = null,
+                                resend = null) {
     requireConnected();
     const deadline = Date.now() + timeoutMs;
+    const busyState = {count: 0, reportedAt: 0};
+    let lastBusyMessage = "";
     while (Date.now() < deadline) {
         task.checkCancelled();
         const remaining = Math.max(
@@ -430,6 +541,19 @@ export function waitForResponse(responseTopic,
         if (routeProtocolMessage(message)) {
             continue;
         }
+        const busyMessage = busyRejectionMessage(message, responseTopic);
+        if (busyMessage !== null) {
+            lastBusyMessage = busyMessage;
+            reportBusyRetry(busyState, responseTopic, busyMessage);
+            if (resend !== null) {
+                resend();
+            }
+            if (Date.now() < deadline) {
+                task.delay(Math.max(1, Math.min(
+                    busyRetryInterval(), deadline - Date.now())));
+            }
+            continue;
+        }
         const response = responseFromMessage(message, responseTopic, requestId);
         if (response === null) {
             continue;
@@ -438,6 +562,10 @@ export function waitForResponse(responseTopic,
             continue;
         }
         return response;
+    }
+    if (busyState.count > 0) {
+        throw new VcareaBusyError(
+            responseTopic, requestId, busyState.count, lastBusyMessage);
     }
     throw new ProtocolResponseTimeoutError(
         `等待 VCarEA 应答超时：${responseTopic}（${requestId}）`);
@@ -449,14 +577,21 @@ export function request(requestTopic,
                         timeoutMs = responseTimeout(),
                         accept = null) {
     const requestData = createRequest(data);
-    publishJson(requestTopic, requestData, Math.min(timeoutMs, responseTimeout()));
+    const publishTimeoutMs = Math.min(timeoutMs, responseTimeout());
+    const resend = () =>
+        publishJson(requestTopic, requestData, publishTimeoutMs);
+    resend();
     return waitForResponse(
-        responseTopic, requestData.ID, timeoutMs, accept);
+        responseTopic, requestData.ID, timeoutMs, accept, resend);
 }
 
 /**
- * 配置工程的 TCF/TBF；工程树尚在后台加载时，仅重试“配置路径未找到”。
- * 其他业务错误、连接错误和单次应答超时均立即返回，避免重复未知副作用。
+ * 配置工程的 TCF/TBF。
+ *
+ * 工程树尚在后台加载或宿主正忙时按“可重试的瞬态失败”重试
+ * （见 isProjectConfigurationRetryableError）：前者的应答确认配置未生效，
+ * 后者的应答确认宿主没有执行任何操作，重发都不会重复未知副作用；完全没有
+ * 应答的单次超时仍立即返回，因为它无法排除“宿主已执行但应答丢失”。
  */
 export function configureProjectConfiguration(operationType,
                                               configPath,
@@ -490,9 +625,10 @@ export function configureProjectConfiguration(operationType,
                     ConfigPath: path,
                 },
                 Math.min(
-                    responseTimeout(), Math.max(1, deadline - Date.now())));
+                    configureResponseTimeout(),
+                    Math.max(1, deadline - Date.now())));
         } catch (error) {
-            if (!isProjectConfigurationNotReadyError(error)) {
+            if (!isProjectConfigurationRetryableError(error)) {
                 throw error;
             }
             lastError = error;
@@ -604,7 +740,8 @@ export function probeExecutionPort(timeoutMs = optionInteger(
         return {Port: null, Error: "执行端口应答中的 ExecutionMqttPort 无效"};
     } catch (error) {
         if (error instanceof ProtocolResponseTimeoutError
-                || error instanceof VcareaResponseError) {
+                || error instanceof VcareaResponseError
+                || error instanceof VcareaBusyError) {
             return {Port: null, Error: error.message};
         }
         throw error;

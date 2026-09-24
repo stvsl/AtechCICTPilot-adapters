@@ -29,8 +29,10 @@ stages {
     }
     stage("打开工程并配置测试环境") {
         // TODO: 接口文档未规定项目后台初始化及 TCF/TBF 配置超时，暂按 600 秒处理：
-        // 就绪探测最长 120 秒；单次 TCF/TBF 配置实测 16~21 秒（同步加载 XIL
-        // 环境），其余为配置请求瞬态重试的兜底余量。
+        // 就绪探测最长 120 秒；打开工程应答实测 5~35 秒；宿主后台恢复窗口内
+        // 业务请求会被“其他接口正在工作”拒绝，按 ConfigureResponseTimeoutMs
+        // 自动重发；单次 TCF/TBF 配置实测 16~24 秒（同步加载 XIL 环境），
+        // 其余为配置请求瞬态重试的兜底余量。
         timeout(600000)
         steps {
             runjs("scripts/vcarea_test.js", "configure")
