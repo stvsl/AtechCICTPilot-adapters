@@ -1,4 +1,4 @@
-"""Load KY.VCar.Central.Connector.Sdk via pythonnet."""
+"""Load KY.VCar.Central.Connector.Sdk via pythonnet（Python 3.12 需 >=3.0.3）。"""
 
 from __future__ import annotations
 
@@ -105,8 +105,60 @@ def resolve_site_packages(bin_dir: Path) -> Path:
     )
 
 
+def _installed_pythonnet_version():
+    """返回当前 sys.path 上可导入的 pythonnet 版本，缺失时返回 None。
+
+    pythonnet 3.0.1 不暴露 ``__version__``，回退到 importlib.metadata。
+    """
+    try:
+        import pythonnet  # noqa: F401  （只查询版本，不加载 CLR）
+    except Exception:  # noqa: BLE001
+        return None
+    raw = str(getattr(pythonnet, "__version__", "") or "")
+    if raw == "":
+        try:
+            from importlib.metadata import version as _metadata_version
+
+            raw = _metadata_version("pythonnet")
+        except Exception:  # noqa: BLE001
+            raw = ""
+    parts = []
+    for piece in raw.split(".")[:3]:
+        digits = "".join(ch for ch in piece if ch.isdigit())
+        if digits == "":
+            break
+        parts.append(int(digits))
+    return tuple(parts) if parts else None
+
+
+def _pythonnet_usable(version) -> bool:
+    """pythonnet 3.0.2 起支持 Python 3.12；低版本在 3.12 下 import clr 会失败。"""
+    if version is None:
+        return False
+    if sys.version_info[:2] >= (3, 12):
+        return version >= (3, 0, 2)
+    return True
+
+
 def _ensure_pythonnet_path(bin_dir: Path) -> None:
+    """选择可用的 pythonnet。
+
+    优先使用当前环境已安装的 pythonnet；不可用（缺失或版本过旧）时回退
+    VCarEA 自带的 site-packages。已知版本不支持当前 Python（例如 3.12 +
+    自带 3.0.1）时给出明确错误，而不是让 `import clr` 抛出晦涩的 CLR 异常。
+    """
+    if _pythonnet_usable(_installed_pythonnet_version()):
+        return
     _register_site_packages(resolve_site_packages(bin_dir))
+    version = _installed_pythonnet_version()
+    if _pythonnet_usable(version):
+        return
+    if sys.version_info[:2] >= (3, 12) and version is not None:
+        raise RuntimeError(
+            "当前 Python 3.12 需要 pythonnet>=3.0.3；找到的版本为 "
+            f"{version}（VCarEA 自带 site-packages 的 3.0.1 不支持 3.12）。"
+            "请执行 `pip install -U pythonnet`，或改用 Python 3.11 及以下"
+            "解释器复用自带 site-packages。")
 
 
 def _configure_coreclr_runtime(bin_dir: Path) -> None:

@@ -21,7 +21,12 @@ const DEFAULT_REPORT_TIMEOUT_MS = 600000;
 const DEFAULT_CLEANUP_TIMEOUT_MS = 5000;
 const ACCESS_RETRY_INTERVAL_MS = 1000;
 const PROJECT_CONFIGURATION_RETRY_INTERVAL_MS = 1000;
+const PROBE_REPORT_INTERVAL_MS = 3000;
 const RECEIVE_POLL_INTERVAL_MS = 250;
+
+// TODO: 接口文档未定义执行端口探测超时；实测 VCarEA 1.8.4.0826 对
+// `Execution/MqttPort` 查询完全不产生应答，因此只做一次有界观察。
+const DEFAULT_EXECUTION_PORT_PROBE_MS = 3000;
 
 // TODO: 文档没有规定单次执行可产生的报告事件上限，暂限制为 10000 条，
 // 并在执行结果中记录被丢弃的数量，避免异常服务耗尽脚本内存。
@@ -73,17 +78,21 @@ export const TOPICS = Object.freeze({
     executionPortResponse: "KY/VCar/EA/Execution/MqttPort/Response",
 });
 
-const REPORT_TOPICS = Object.freeze([
-    "VCar/EA/TestReport/Run/Start",
-    "VCar/EA/TestReport/Run/Stop",
-    "VCar/EA/TestReport/Plan/Start",
-    "VCar/EA/TestReport/Plan/Stop",
-    "VCar/EA/TestReport/Case/Start",
-    "VCar/EA/TestReport/Case/Stop",
-    "VCar/EA/TestReport/Step/Start",
-    "VCar/EA/TestReport/Step/UnderWay",
-    "VCar/EA/TestReport/Step/Stop",
-]);
+/**
+ * 测试报告事件主题。
+ *
+ * 实测 VCarEA 1.8.4.0826：执行事件由宿主从执行器 broker 转发到主 broker，
+ * 主题统一带 `KY/` 前缀，且当前版本只转发停止类事件（`Run/Stop` 与
+ * `Case/Stop`，后者附带 RunID 与失败计数）；文档里 `VCar/EA/TestReport/...`
+ * （无前缀）的写法及 Start/Step 事件不会到达。订阅整个前缀既能覆盖已知
+ * 事件，也能接住未来版本新增的转发类型。
+ */
+const REPORT_TOPIC_PREFIX = "KY/VCar/EA/TestReport/";
+export const REPORT_TOPIC_SUBSCRIPTION = `${REPORT_TOPIC_PREFIX}#`;
+export const REPORT_TOPICS = Object.freeze({
+    runStop: `${REPORT_TOPIC_PREFIX}Run/Stop`,
+    caseStop: `${REPORT_TOPIC_PREFIX}Case/Stop`,
+});
 
 const RESPONSE_TOPICS = Object.freeze([
     TOPICS.accessResponse,
@@ -368,9 +377,9 @@ export function unsubscribe(topic) {
     subscriptions = subscriptions.filter((entry) => entry !== topic);
 }
 
-/** 消费文档声明的测试报告事件，并保留不含大块 Base64 的结果快照。 */
+/** 判断消息是否为宿主转发的测试报告事件，并保留不含大块 Base64 的快照。 */
 export function routeProtocolMessage(message) {
-    if (!message || !REPORT_TOPICS.includes(message.topic)) {
+    if (!message || !String(message.topic).startsWith(REPORT_TOPIC_PREFIX)) {
         return false;
     }
     try {
@@ -504,6 +513,116 @@ export function configureProjectConfiguration(operationType,
         + (lastError === null ? "未执行配置请求" : lastError.message));
 }
 
+/** 配置列表中出现测试配置与测试台配置即视为工程后台初始化完成。 */
+function hasProjectConfigurations(entries) {
+    const suffixes = [".tcf", ".tbf"];
+    return suffixes.every((suffix) => entries.some((entry) =>
+        String(entry && entry.Path ? entry.Path : "")
+            .toLowerCase().endsWith(suffix)));
+}
+
+/**
+ * 轮询配置列表，直到 VCarEA 完成工程后台初始化。
+ *
+ * 打开工程应答早于 VCarEA 后台恢复 TBF 与工程树构造：探测到测试配置和
+ * 测试台配置同时出现在配置列表中即提前返回，替代按固定时长盲等；探测
+ * 失败按间隔重试，超时后抛出最近一次失败原因。
+ */
+export function waitForProjectConfigurations(timeoutMs, probeIntervalMs) {
+    const overallTimeoutMs = Number(timeoutMs);
+    if (!Number.isInteger(overallTimeoutMs) || overallTimeoutMs < 1) {
+        throw new Error("VCarEA 工程就绪超时必须是正整数");
+    }
+    const probeInterval = Math.max(1, Math.floor(Number(probeIntervalMs) || 0));
+    // 单次探测使用独立的短应答超时，保证未就绪时能按间隔持续探测。
+    const probeResponseTimeoutMs = Math.min(
+        responseTimeout(), Math.max(2000, probeInterval * 2));
+    const startedAt = Date.now();
+    const deadline = startedAt + overallTimeoutMs;
+    let configurations = [];
+    let lastError = null;
+    let lastReportAt = startedAt;
+    while (Date.now() < deadline) {
+        task.checkCancelled();
+        try {
+            const response = request(
+                TOPICS.configurationsRequest,
+                TOPICS.configurationsResponse,
+                undefined,
+                Math.min(
+                    probeResponseTimeoutMs,
+                    Math.max(1, deadline - Date.now())));
+            configurations = Array.isArray(response.Data)
+                ? response.Data : [];
+            if (hasProjectConfigurations(configurations)) {
+                return {
+                    Configurations: configurations,
+                    WaitedMs: Date.now() - startedAt,
+                };
+            }
+            lastError = new Error("配置列表中尚未出现测试配置或测试台配置");
+        } catch (error) {
+            lastError = error;
+        }
+        const now = Date.now();
+        if (now - lastReportAt >= PROBE_REPORT_INTERVAL_MS) {
+            lastReportAt = now;
+            task.info(
+                `VCarEA 工程仍在后台初始化（已等待 `
+                + `${Math.round((now - startedAt) / 1000)} 秒）：`
+                + (lastError === null ? "未知原因" : lastError.message));
+        }
+        if (Date.now() < deadline) {
+            task.delay(Math.min(
+                probeInterval, Math.max(1, deadline - Date.now())));
+        }
+    }
+    throw new Error(
+        `等待 VCarEA 工程配置就绪超时（${overallTimeoutMs} ms）：`
+        + (lastError === null ? "未执行配置探测" : lastError.message));
+}
+
+/**
+ * 查询执行 MQTT 端口（可选观察）。
+ *
+ * 实测 VCarEA 1.8.4.0826 对该请求完全不产生应答（包括 Case 执行期间），
+ * 因此只执行一次短超时请求：无应答或业务错误按 `{Port: null, Error}` 返回，
+ * 不视为失败；连接级错误仍向上抛出，避免掩盖真实故障。
+ */
+export function probeExecutionPort(timeoutMs = optionInteger(
+    "ExecutionPortProbeMs", DEFAULT_EXECUTION_PORT_PROBE_MS, 1, 60000)) {
+    try {
+        const response = request(
+            TOPICS.executionPortRequest,
+            TOPICS.executionPortResponse,
+            undefined,
+            timeoutMs);
+        const port = Number(response.Data && response.Data.ExecutionMqttPort);
+        if (Number.isInteger(port) && port >= 0 && port <= 65535) {
+            return {Port: port, Error: null};
+        }
+        return {Port: null, Error: "执行端口应答中的 ExecutionMqttPort 无效"};
+    } catch (error) {
+        if (error instanceof ProtocolResponseTimeoutError
+                || error instanceof VcareaResponseError) {
+            return {Port: null, Error: error.message};
+        }
+        throw error;
+    }
+}
+
+/**
+ * 判断“实验环境未启动”的幂等应答错误。
+ *
+ * 实测停止环境时 VCarEA 可能返回 Code=0 且消息为“未启动实验环境，
+ * 请先启动实验环境”；若某些版本以非零 Code 表达同一语义，清理阶段
+ * 也不应视为失败。
+ */
+export function isEnvironmentNotRunningError(error) {
+    return error instanceof VcareaResponseError
+        && String(error.responseMessage || "").includes("未启动");
+}
+
 function disconnectCurrentConnection() {
     if (connectionHandle === null) {
         return;
@@ -547,9 +666,9 @@ function connectBroker() {
     });
     connectionHandle = result.handle;
     subscriptions = [];
-    // TODO: 文档提供 ExecutionMqttPort 查询，但未说明该端口是否是独立报告
-    // broker，也未提供其认证方式；暂在唯一完整定义的主连接上订阅报告主题。
-    for (const topic of [...RESPONSE_TOPICS, ...REPORT_TOPICS]) {
+    // 报告事件只在主 broker 上转发（主题带 KY/ 前缀）；执行器 broker 仅存于
+    // 执行期间且使用动态凭据，适配器不连接它。
+    for (const topic of [...RESPONSE_TOPICS, REPORT_TOPIC_SUBSCRIPTION]) {
         subscribe(topic, 1);
     }
     task.info(`已连接 VCarEA MQTT 服务：${brokerConfiguration.ServerUri}`);
