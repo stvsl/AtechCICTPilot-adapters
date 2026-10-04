@@ -1,5 +1,5 @@
 import * as cli from "@atech/cli";
-import * as dllnet from "@atech/dllnet";
+import {openLibrary} from "./connector_sdk/index.js";
 import * as fs from "@atech/fs";
 import * as task from "@atech/task";
 
@@ -7,9 +7,6 @@ import {
     describeInstallation,
     resolveInstallation,
 } from "./vcarea_utils.js";
-
-/** Connector SDK 中的只读客户端类型。 */
-const SDK_CLIENT_TYPE = "KY.VCar.Central.Connector.Sdk.ConnectorServiceClient";
 
 /** 连接服务唯一标识的默认值；执行器服务使用 VCarEA.Executor。 */
 const DEFAULT_CONNECTION_KEY = "VCarEA";
@@ -35,7 +32,7 @@ let installation = null;
 let processHandle = null;
 let processPid = 0;
 let processStartedByPlugin = false;
-let sdkAssembly = null;
+let sdkLibrary = null;
 
 function describeError(error) {
     if (error === null || error === undefined) {
@@ -65,17 +62,17 @@ function isSessionResetError(error) {
 }
 
 function dropSdkSession(reason) {
-    if (sdkAssembly === null) {
+    if (sdkLibrary === null) {
         return;
     }
     task.warning(
         `dllnet worker 会话已重置（${reason}），下次调用将重新加载 Connector SDK`);
     try {
-        sdkAssembly.close();
+        sdkLibrary.close();
     } catch (_) {
         // 会话重置后旧句柄已经失效，此处只需丢弃本地引用。
     }
-    sdkAssembly = null;
+    sdkLibrary = null;
 }
 
 function decodeText(bytes) {
@@ -118,25 +115,24 @@ function connectionKey() {
     return configured;
 }
 
-function loadSdkAssembly() {
-    if (sdkAssembly !== null) {
-        return sdkAssembly;
+function loadSdkLibrary() {
+    if (sdkLibrary !== null) {
+        return sdkLibrary;
     }
     const target = requireInstallation();
     task.info(`加载 Connector SDK：${target.ConnectorSdkPath}`);
     try {
-        sdkAssembly = dllnet.load(target.ConnectorSdkPath);
+        sdkLibrary = openLibrary(target.ConnectorSdkPath);
     } catch (error) {
         throw new Error(
             `加载 Connector SDK 失败：${describeError(error)}；`
             + describeInstallation(target));
     }
-    return sdkAssembly;
+    return sdkLibrary;
 }
 
 function connectClient(timeoutMs) {
-    const client = loadSdkAssembly().callObject(
-        `${SDK_CLIENT_TYPE}::Connect`, [null], {timeoutMs});
+    const client = loadSdkLibrary().Connect(null, {timeoutMs});
     if (client === null || client === undefined) {
         throw new Error("ConnectorServiceClient.Connect 未返回客户端实例");
     }
@@ -150,7 +146,7 @@ function closeClient(client, dispose = true) {
     // 连接失败时 Dispose 可能再次阻塞，只在确认连接可用后释放 SDK 会话。
     if (dispose) {
         try {
-            client.call("Dispose");
+            client.Dispose();
         } catch (error) {
             if (!isSessionResetError(error)) {
                 task.warning(`释放连接客户端失败：${describeError(error)}`);
@@ -171,7 +167,7 @@ function probeConnectionServiceKey(key, timeoutMs) {
     let connected = false;
     try {
         client = connectClient(timeoutMs);
-        const info = client.call("TryGetConnectionInfo", [key], {timeoutMs});
+        const info = client.TryGetConnectionInfo(key, {timeoutMs});
         connected = true;
         return info !== null && info !== undefined;
     } catch (error) {
@@ -353,8 +349,8 @@ export function readConnectorMqttConfiguration() {
     try {
         let info = null;
         try {
-            info = client.call(
-                "TryGetConnectionInfo", [key], {timeoutMs: QUERY_TIMEOUT_MS});
+            info = client.TryGetConnectionInfo(
+                key, {timeoutMs: QUERY_TIMEOUT_MS});
             connected = true;
         } catch (error) {
             if (isSessionResetError(error)) {
@@ -376,13 +372,13 @@ export function readConnectorMqttConfiguration() {
 
 /** 释放 Connector SDK，并终止本次适配器实际启动的 VCarEA 进程。 */
 export function cleanupConnector() {
-    if (sdkAssembly !== null) {
+    if (sdkLibrary !== null) {
         try {
-            sdkAssembly.close();
+            sdkLibrary.close();
         } catch (error) {
             task.warning(`关闭 Connector SDK 失败：${describeError(error)}`);
         }
-        sdkAssembly = null;
+        sdkLibrary = null;
     }
 
     if (processHandle !== null) {
