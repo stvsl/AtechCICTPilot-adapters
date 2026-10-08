@@ -8,7 +8,7 @@ stages {
     stage("校验测试参数") {
         timeout(30000)
         steps {
-            runjs("scripts/hello_world.js", "validateInput", env.WAIT_DURATION_SECONDS)
+            runjs("scripts/hello_world.js", "validateInput", env.WAIT_DURATION_SECONDS, env.TEST_CASE_COUNT, env.TEST_CASE_DURATION_MS)
         }
     }
     stage("执行 Hello World") {

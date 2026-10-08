@@ -28,6 +28,28 @@
                 "type": "Original",
                 "tags": []
             }
+        },
+        {
+            "id": "TEST_CASE_COUNT",
+            "nameCN": "模拟测试用例条数（1-100000）",
+            "nameEN": "Simulated Test Case Count (1-100000)",
+            "type": "integer",
+            "required": true,
+            "platform": {
+                "type": "Original",
+                "tags": []
+            }
+        },
+        {
+            "id": "TEST_CASE_DURATION_MS",
+            "nameCN": "每条测试用例的模拟执行时长（毫秒，0-60000）",
+            "nameEN": "Simulated Execution Duration per Test Case (milliseconds, 0-60000)",
+            "type": "integer",
+            "required": true,
+            "platform": {
+                "type": "Original",
+                "tags": []
+            }
         }
     ],
     "OnDeviceProperty": []
