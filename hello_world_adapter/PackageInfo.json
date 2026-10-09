@@ -14,10 +14,49 @@
         "ApiVersion": "1.0",
         "Language": "javascript"
     },
+    "PlatformEngineeringInfo": [
+        {
+            "EngineeringPackageId": "CANOE_TEST_PACKAGE_TEST_MODEL",
+            "EngineeringPackageNameCN": "CANoE Test Model 工程",
+            "EngineeringPackageNameEN": "CANoE Test Model Package"
+        },
+        {
+            "EngineeringPackageId": "CANOE_TEST_PACKAGE_TEST_UNIT",
+            "EngineeringPackageNameCN": "CANoE Test Unit 工程",
+            "EngineeringPackageNameEN": "CANoE Test Unit Package"
+        }
+    ],
     "Permissions": {},
     "CallingRuntime": [],
     "SelfExaminationAbility": true,
     "RequirementProperty": [
+        {
+            "id": "CANOE_PROJECT",
+            "nameCN": "CANoe 工程文件",
+            "nameEN": "CANoe Project File",
+            "type": "file",
+            "fileExtension": ".zip",
+            "required": true,
+            "platform": {
+                "type": "EngineeringPackage",
+                "tags": [
+                    "CANOE_TEST_PACKAGE_TEST_MODEL",
+                    "CANOE_TEST_PACKAGE_TEST_UNIT"
+                ]
+            }
+        },
+        {
+            "id": "TEST_CASE_IDS",
+            "nameCN": "测试用例",
+            "nameEN": "Test Case",
+            "type": "text_file",
+            "fileExtension": ".json|.txt",
+            "required": false,
+            "platform": {
+                "type": "CaseSelection",
+                "tags": []
+            }
+        },
         {
             "id": "WAIT_DURATION_SECONDS",
             "nameCN": "等待测试时长（秒，0-600）",
