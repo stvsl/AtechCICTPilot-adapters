@@ -39,12 +39,23 @@ const PROJECT_ROOT_URI = "workspace://vcarea-test/project";
 const RESULT_ARTIFACT_URI = "artifact://vcarea-test/execution-result.json";
 const SUPPORTED_REPORT_TYPES = ["html", "pdf", "xlsx", "zip"];
 
-// TODO: 接口文档没有规定工程后台初始化、启动实验环境后的稳定时间和报告事件
-// 收尾时间，以下均为适配器实测值，可通过节点选项覆盖。
+// TODO: 接口文档没有规定工程后台初始化、启动实验环境后的稳定时间、报告渲染
+// 时间和报告事件收尾时间，以下均为适配器实测值，可通过节点选项覆盖。
 const DEFAULT_PROJECT_READY_TIMEOUT_MS = 120000;
 const DEFAULT_PROJECT_READY_PROBE_INTERVAL_MS = 500;
 const DEFAULT_ENVIRONMENT_SETTLE_MS = 1000;
 const DEFAULT_REPORT_EVENT_SETTLE_MS = 500;
+const DEFAULT_REPORT_RENDER_TIMEOUT_MS = 30000;
+
+/**
+ * 报告渲染完成后出现在报告目录中的旧版格式后缀。
+ *
+ * 实测 VCarEA 在 Case 停止后异步渲染报告目录：`data/vcar_ea_data_report.db`
+ * 先落盘，约 2~3 秒后 `<报告名>.html`、`<报告名>.pdf`、`<报告名>.xlsx`
+ * 才写入；渲染完成前调用报告下载接口只能得到仅含数据库的 ZIP。
+ */
+const NATIVE_REPORT_FORMATS = ["html", "pdf", "xlsx"];
+const REPORT_RENDER_PROBE_INTERVAL_MS = 500;
 
 let sourceProjectUri = "";
 let projectRootUri = "";
@@ -319,6 +330,36 @@ function projectRelativePath(uri) {
     const prefix = `${projectRootUri.replace(/\/$/, "")}/`;
     return String(uri).startsWith(prefix)
         ? String(uri).substring(prefix.length) : "";
+}
+
+/**
+ * 把工程副本内的原生绝对路径映射为对应的虚拟 URI。
+ *
+ * 报告由 VCarEA 写入工程目录（形如 `Reports/<报告名>`），虚拟文件接口
+ * 只接受 `scheme://` URI，因此需要按工程根前缀把原生路径转回 URI。
+ * 前缀比较使用归一化小写形式，截取时保留原始大小写；路径不在工程
+ * 目录内时返回空串。
+ */
+function projectUriForNativePath(nativePath) {
+    const raw = String(nativePath || "").trim();
+    if (raw === "" || projectRootUri === "") {
+        return "";
+    }
+    const root = String(fs.nativePath(projectRootUri) || "").trim();
+    if (root === "") {
+        return "";
+    }
+    const slashed = (value) => value.replace(/^file:\/\//i, "")
+        .replace(/\\/g, "/").replace(/\/+$/g, "");
+    const target = slashed(raw);
+    const base = slashed(root);
+    if (target.toLowerCase() === base.toLowerCase()) {
+        return projectRootUri;
+    }
+    if (!target.toLowerCase().startsWith(`${base.toLowerCase()}/`)) {
+        return "";
+    }
+    return `${projectRootUri}/${target.substring(base.length + 1)}`;
 }
 
 /**
@@ -663,6 +704,61 @@ function publishExecutionSummary() {
         "application/json");
 }
 
+/**
+ * 等待 VCarEA 渲染完成报告目录。
+ *
+ * 实测 Case 停止后报告目录先写入数据库文件，约 2~3 秒后 html/pdf/xlsx
+ * 才渲染完成；在此之前下载报告只能得到仅含数据库的 ZIP（2026-09-24 实测
+ * 5359 字节，而完整报告为 609889 字节）。这里按固定间隔轮询工程目录中的
+ * 报告目录，等到请求的格式文件全部出现再下载；仅请求 ZIP 时等待完整的
+ * 三种旧版格式。超时只告警，下载仍按现状继续（保持回退语义）。
+ *
+ * @returns {boolean} 超时前是否观察到全部渲染产物。
+ */
+export function waitForReportRendered(reportPath) {
+    const directoryUri = projectUriForNativePath(reportPath);
+    if (directoryUri === "") {
+        task.warning(
+            `报告路径 [${reportPath}] 不在任务工程目录内，跳过渲染等待`);
+        return false;
+    }
+    const requested = reportTypes.filter((type) => type !== "zip");
+    const needed = requested.length > 0 ? requested : NATIVE_REPORT_FORMATS;
+    const timeoutMs = optionInteger(
+        "ReportRenderTimeoutMs",
+        DEFAULT_REPORT_RENDER_TIMEOUT_MS,
+        1000,
+        600000);
+    const deadline = Date.now() + timeoutMs;
+    let lastError = null;
+    while (Date.now() < deadline) {
+        task.checkCancelled();
+        let names = [];
+        try {
+            names = fs.list(directoryUri, true)
+                .filter((entry) => entry.type === "file")
+                .map((entry) => entry.name.toLowerCase());
+            lastError = null;
+        } catch (error) {
+            // 报告目录可能尚未创建（渲染完全未开始），按未就绪继续轮询。
+            names = [];
+            lastError = error;
+        }
+        if (needed.every((format) =>
+            names.some((name) => name.endsWith(`.${format}`)))) {
+            return true;
+        }
+        task.delay(Math.max(1, Math.min(
+            REPORT_RENDER_PROBE_INTERVAL_MS, deadline - Date.now())));
+    }
+    task.warning(
+        `等待 VCarEA 渲染报告超时（${timeoutMs} ms）：`
+        + `${needed.join("、")}尚未出现在报告目录，`
+        + `下载的 ZIP 可能缺少这些格式`
+        + (lastError === null ? "" : `（${lastError.message}）`));
+    return false;
+}
+
 /** 阶段 1：校验并解压工程包，解析用例选择及报告格式。 */
 export function prepare(projectPackage) {
     resetExecutionState();
@@ -924,6 +1020,9 @@ export function collectArtifacts() {
         }
         reportIndex += 1;
         try {
+            // 实测 Case 停止后 VCarEA 异步渲染报告：数据库先落盘、html/pdf/xlsx
+            // 约 2~3 秒后才写入；渲染完成前下载只能得到仅含数据库的 ZIP。
+            waitForReportRendered(result.ReportPath);
             const downloaded = downloadReport(
                 result.ReportPath, reportIndex, reportTypes);
             reportDownloads.push({

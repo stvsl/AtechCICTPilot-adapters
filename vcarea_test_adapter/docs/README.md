@@ -24,7 +24,7 @@
 | 打开工程并配置测试环境 | `configure` | 打开工程，探测后台初始化完成，配置 TCF/TBF，查询待执行 Case |
 | 启动并等待实验环境就绪 | `startMeasurement` | 启动实验环境（启动应答即就绪，实测同步加载 XIL 环境）；随后对执行端口接口做一次有界观察并记录，不作为失败判据 |
 | 执行测试用例 | `execute` | 逐个打开、执行并等待 `Run/Stop` 或 `Case/Stop` 事件后关闭选中的 Case，采集执行应答及报告事件 |
-| 收集测试报告 | `collectArtifacts` | 按 `Report/Download -> Report/Push` 流程下载 ZIP（校验 SHA-256），按需从 ZIP 中提取 html/pdf/xlsx，并发布 JSON 执行摘要 |
+| 收集测试报告 | `collectArtifacts` | 先等待 VCarEA 渲染报告目录（数据库先落盘、html/pdf/xlsx 稍后生成），再按 `Report/Download -> Report/Push` 流程下载 ZIP（校验 SHA-256），按需从 ZIP 中提取 html/pdf/xlsx，并发布 JSON 执行摘要 |
 | 清理 | `cleanup` | 停止活动 Case，关闭 Case、实验环境和工程，断开 MQTT，并停止本次插件启动的 VCarEA |
 
 ## 任务输入
@@ -86,6 +86,12 @@
   `[int32 index][int32 length][data]`；ZIP 内实测包含 html、pdf、xlsx 与
   sqlite 数据库。选择旧版格式时适配器从 ZIP 中提取对应文件（ZIP 本体保留），
   提取失败时仅告警并保留 ZIP。
+- 实测 VCarEA 在 Case 停止后异步渲染报告目录：`data/vcar_ea_data_report.db`
+  先落盘，约 2~3 秒后 html/pdf/xlsx 才写入；渲染完成前下载报告只能得到
+  仅含数据库的 ZIP（实测 5359 字节，完整报告为 609889 字节）。适配器下载前
+  按 500 ms 间隔轮询报告目录，等到任务请求的格式（仅请求 ZIP 时等待三种
+  旧版格式）全部出现再下载；超过 `ReportRenderTimeoutMs` 只告警并继续下载，
+  回退语义与升级前一致。
 - `FileHashCode` 实测为组包 ZIP 的 SHA-256，适配器本地校验并记录结果
   （不匹配时告警，不阻断产物发布）。
 - 文档没有规定各类超时、轮询间隔和报告大小上限；代码中的假设值均以
@@ -111,6 +117,7 @@
 | `ResponseTimeoutMs` | `30000` | 普通 MQTT 应答超时 |
 | `ExecutionTimeoutMs` | `1800000` | 单个 Case 从执行请求到收到停止事件的总超时 |
 | `ReportTimeoutMs` | `600000` | 单份报告下载超时 |
+| `ReportRenderTimeoutMs` | `30000` | 下载报告前等待 VCarEA 渲染 html/pdf/xlsx 的超时（1000–600000 ms）；超时告警后继续下载 |
 | `CleanupTimeoutMs` | `5000` | 单次清理接口应答超时 |
 
 插件启动的 VCarEA 进程由 CLI 运行时托管，清理阶段会停止该进程；如果 VCarEA

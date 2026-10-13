@@ -97,6 +97,11 @@
             "type": "enum",
             "values": [
                 {
+                    "id": "16",
+                    "nameCN": "CANoe 16",
+                    "nameEN": "CANoe 16"
+                },
+                {
                     "id": "17",
                     "nameCN": "CANoe 17",
                     "nameEN": "CANoe 17"
