@@ -40,7 +40,8 @@
                     "WindowsInstalledProduct": {
                         "DisplayNameTemplate": "Vector CANoe {version}",
                         "VersionDeviceProperty": "CANOE_VERSION",
-                        "RelativePath": "Exec64/CANoe64.exe"
+                        "RelativePath": "Exec64/CANoe64.exe",
+                        "PathDeviceProperty": "CANOE_INSTALL_DIR"
                     }
                 },
                 {
@@ -48,7 +49,8 @@
                     "WindowsInstalledProduct": {
                         "DisplayNameTemplate": "Vector CANoe {version}",
                         "VersionDeviceProperty": "CANOE_VERSION",
-                        "RelativePath": "Exec64/sabcmd.exe"
+                        "RelativePath": "Exec64/sabcmd.exe",
+                        "PathDeviceProperty": "CANOE_INSTALL_DIR"
                     }
                 },
                 {
@@ -57,7 +59,8 @@
                         "DisplayNameTemplate": "Vector CANoe Test Report Viewer {version}",
                         "VersionDeviceProperty": "CANOE_VERSION",
                         "RelativePath": "ReportViewerCli.exe",
-                        "AllowDisplayNameSuffix": true
+                        "AllowDisplayNameSuffix": true,
+                        "PathDeviceProperty": "CANOE_REPORT_VIEWER_DIR"
                     }
                 }
             ],
@@ -170,6 +173,20 @@
             "id": "CANOE_PROJECT_DIR",
             "nameCN": "任务工作区根目录",
             "nameEN": "Task Workspace Root",
+            "type": "directory",
+            "required": false
+        },
+        {
+            "id": "CANOE_INSTALL_DIR",
+            "nameCN": "CANoe 安装目录（自动发现失败时指定）",
+            "nameEN": "CANoe Installation Directory (used when discovery fails)",
+            "type": "directory",
+            "required": false
+        },
+        {
+            "id": "CANOE_REPORT_VIEWER_DIR",
+            "nameCN": "报告查看器安装目录（自动发现失败时指定）",
+            "nameEN": "Report Viewer Installation Directory (used when discovery fails)",
             "type": "directory",
             "required": false
         },
