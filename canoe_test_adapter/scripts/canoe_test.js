@@ -1327,10 +1327,11 @@ export async function prepare(projectPackage) {
         registerScript({ uri, kind, name: entry.name || baseName(uri) });
     }
     if (scriptUris.length === 0) {
-        if (!useProjectTestSetup) {
-            throw new Error("No CANoe test script (.vtuexe/.tse/.xml) was supplied");
-        }
+        // 未声明测试脚本时回落到工程原生测试设置：configure 阶段复用
+        // .cfg 中已有的 TestConfiguration 或 TestEnvironment。
+        useProjectTestSetup = true;
         testMode = "project";
+        debug("prepare: no TestScripts declared; falling back to the CANoe project test setup");
     }
     requestedIds = parseIds(optionalRequirement("TEST_CASE_IDS"));
     if (requestedIds.length === 0 && Array.isArray(projectDescriptor.TestCaseIds)) {
