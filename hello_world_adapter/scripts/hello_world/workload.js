@@ -2,16 +2,17 @@ import * as fs from "@atech/fs";
 import * as task from "@atech/task";
 
 import {
+    maximumTestCaseCount,
+    maximumTestCaseDurationMs,
     maximumWaitDurationSeconds,
     message,
-    simulatedTestCaseBatchSize,
-    simulatedTestCaseCount,
-    simulatedTestCaseOutputDelayMs
+    minimumTestCaseCount,
+    simulatedTestCaseProgressReportLimit
 } from "./constants.js";
 import {
     completeWorkload,
     executionState,
-    setWaitDurationSeconds,
+    setTestParameters,
     startWorkload
 } from "./state.js";
 import { requirePreparedWorkspace } from "./workspace.js";
@@ -21,19 +22,17 @@ import { requirePreparedWorkspace } from "./workspace.js";
  * 因而不直接接触宿主本机路径或其他插件的数据。
  */
 
-// 读取工作流传入的 input:// 文件，并将文本转换为受限的秒数。
-function readWaitDurationSeconds(waitDurationUri) {
-    const value = fs.readText(waitDurationUri).trim();
+// 读取工作流传入的 input:// 文件，并将文本转换为落在闭区间内的整数。
+function readIntegerParameter(parameterUri, parameterId, minimum, maximum) {
+    const value = fs.readText(parameterUri).trim();
     // 先用正则排除负数、小数、空值和多余字符，避免 Number() 的宽松转换。
-    if (!/^(0|[1-9][0-9]*)$/.test(value)) {
-        throw new Error("WAIT_DURATION_SECONDS must be an integer between 0 and 600");
+    const isInteger = /^(0|[1-9][0-9]*)$/.test(value);
+    const parsed = Number(value);
+    if (!isInteger || parsed < minimum || parsed > maximum) {
+        throw new Error(`${parameterId} must be an integer between `
+                        + `${minimum} and ${maximum}`);
     }
-
-    const seconds = Number(value);
-    if (seconds > maximumWaitDurationSeconds) {
-        throw new Error("WAIT_DURATION_SECONDS must be between 0 and 600");
-    }
-    return seconds;
+    return parsed;
 }
 
 // 用例编号至少保留两位，以保证首个用例与控制台约定一致。
@@ -50,20 +49,23 @@ function testCasePassed(index) {
 }
 
 /*
- * 模拟执行 10000 个测试用例。每个用例严格输出开始和结束两条日志，供 CLI
- * 控制台和任务事件订阅者观察。每条输出之间间隔 5 毫秒，模拟逐条执行的
- * 真实节奏，同时让运行时在每次等待期间检查暂停、取消和超时。
+ * 按配置的条数与单条时长模拟测试用例。每个用例严格输出开始和结束两条日志，
+ * 供 CLI 控制台和任务事件订阅者观察。单条时长同时决定输出节奏，让运行时在
+ * 每次等待期间检查暂停、取消和超时。
  */
-async function simulateTestCases() {
+async function simulateTestCases(testCaseCount, testCaseDurationMs) {
     let passed = 0;
     let failed = 0;
+    // 进度最多上报 100 次，用例越多每批包含的用例越多。
+    const progressStep = Math.max(
+        1, Math.ceil(testCaseCount / simulatedTestCaseProgressReportLimit));
 
-    for (let index = 1; index <= simulatedTestCaseCount; ++index) {
+    for (let index = 1; index <= testCaseCount; ++index) {
         task.checkCancelled();
         const id = testCaseId(index);
         task.info(`正在执行${id}`);
-        // 每条输出之间等待 5 毫秒，避免输出瞬间刷屏。
-        await task.delay(simulatedTestCaseOutputDelayMs);
+        // 配置的单条执行时长代表该用例的模拟耗时。
+        await task.delay(testCaseDurationMs);
 
         if (testCasePassed(index)) {
             ++passed;
@@ -72,49 +74,75 @@ async function simulateTestCases() {
             ++failed;
             task.info(`${id} 执行完成 -失败`);
         }
-        await task.delay(simulatedTestCaseOutputDelayMs);
 
-        if (index % simulatedTestCaseBatchSize === 0) {
+        if (index % progressStep === 0 || index === testCaseCount) {
             // 45%-75% 用于展示模拟测试用例的批量执行进度。
             task.progress(45 + Math.floor(
-                index * 30 / simulatedTestCaseCount));
+                index * 30 / testCaseCount));
         }
     }
 
     return {
-        total: simulatedTestCaseCount,
+        total: testCaseCount,
         passed,
         failed
     };
 }
 
 /*
- * 工作流第二阶段：验证 WAIT_DURATION_SECONDS，并将结果写入共享状态。
- * 执行阶段不再读取输入文件，以保证整个执行过程使用已验证的同一个值。
+ * 工作流第二阶段：验证等待时长、用例条数和单条执行时长，并将结果写入共享状态。
+ * 执行阶段不再读取输入文件，以保证整个执行过程使用同一组已验证的值。
  */
-export async function validateInput(waitDurationUri) {
+export async function validateInput(waitDurationUri,
+                                    testCaseCountUri,
+                                    testCaseDurationUri) {
     requirePreparedWorkspace();
-    const waitDurationSeconds = readWaitDurationSeconds(waitDurationUri);
-    setWaitDurationSeconds(waitDurationSeconds);
-    task.info(`Validated a ${waitDurationSeconds}-second workload`);
+    const waitDurationSeconds = readIntegerParameter(
+        waitDurationUri,
+        "WAIT_DURATION_SECONDS",
+        0,
+        maximumWaitDurationSeconds);
+    const testCaseCount = readIntegerParameter(
+        testCaseCountUri,
+        "TEST_CASE_COUNT",
+        minimumTestCaseCount,
+        maximumTestCaseCount);
+    const testCaseDurationMs = readIntegerParameter(
+        testCaseDurationUri,
+        "TEST_CASE_DURATION_MS",
+        0,
+        maximumTestCaseDurationMs);
+    setTestParameters({
+        waitDurationSeconds,
+        testCaseCount,
+        testCaseDurationMs
+    });
+    task.info(`Validated a ${waitDurationSeconds}-second workload with `
+              + `${testCaseCount} test cases of ${testCaseDurationMs} ms`);
     task.progress(10);
     await task.delay(100);
 }
 
 /*
- * 工作流第三阶段先模拟等待，再执行固定的 10000 条测试用例。
- * 0 秒是合法输入，等待循环不会执行，但测试用例仍会正常执行。
+ * 工作流第三阶段先模拟等待，再执行配置条数的测试用例。
+ * 0 秒等待是合法输入，等待循环不会执行，但测试用例仍会正常执行。
  */
 export async function helloWorld() {
     requirePreparedWorkspace();
-    const { waitDurationSeconds } = executionState();
+    const {
+        testCaseCount,
+        testCaseDurationMs,
+        waitDurationSeconds
+    } = executionState();
     // 未经验证的输入不能进入执行阶段，防止绕过 validateInput。
-    if (waitDurationSeconds === null) {
+    if (waitDurationSeconds === null || testCaseCount === null
+            || testCaseDurationMs === null) {
         throw new Error("Hello World test parameters have not been validated");
     }
 
     startWorkload();
-    task.info(`Simulating a ${waitDurationSeconds}-second workload`);
+    task.info(`Simulating a ${waitDurationSeconds}-second workload and `
+              + `${testCaseCount} test cases of ${testCaseDurationMs} ms`);
     task.progress(20);
 
     for (let elapsedSeconds = 0; elapsedSeconds < waitDurationSeconds;
@@ -127,9 +155,16 @@ export async function helloWorld() {
     }
 
     task.progress(45);
-    const testCaseSummary = await simulateTestCases();
+    const testCaseSummary = await simulateTestCases(testCaseCount,
+                                                    testCaseDurationMs);
     completeWorkload(testCaseSummary);
     task.info(message);
     task.progress(75);
-    return { message, testCaseSummary, waitDurationSeconds };
+    return {
+        message,
+        testCaseSummary,
+        waitDurationSeconds,
+        testCaseCount,
+        testCaseDurationMs
+    };
 }

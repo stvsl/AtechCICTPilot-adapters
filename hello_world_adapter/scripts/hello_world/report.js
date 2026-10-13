@@ -4,7 +4,6 @@ import * as task from "@atech/task";
 import {
     artifactReportUri,
     message,
-    simulatedTestCaseCount,
     workspaceReportUri
 } from "./constants.js";
 import { executionState } from "./state.js";
@@ -25,12 +24,16 @@ export async function verifyResult() {
         completedAt,
         helloWorldCompleted,
         startedAt,
+        testCaseCount,
+        testCaseDurationMs,
         testCaseSummary,
         waitDurationSeconds
     } = executionState();
-    // 开始与完成时间也能防止异常状态被误认为成功。
+    // 开始与完成时间也能防止异常状态被误认为成功；用例条数必须与校验阶段
+    // 保存的配置一致，避免执行阶段使用错误的条数。
     if (!helloWorldCompleted || completedAt < startedAt
-            || testCaseSummary.total !== simulatedTestCaseCount
+            || testCaseCount === null || testCaseDurationMs === null
+            || testCaseSummary.total !== testCaseCount
             || testCaseSummary.passed + testCaseSummary.failed
                 !== testCaseSummary.total) {
         throw new Error("Hello World workload did not complete successfully");
@@ -41,6 +44,8 @@ export async function verifyResult() {
         status: "succeeded",
         message,
         waitDurationSeconds,
+        testCaseCount,
+        testCaseDurationMs,
         testCaseSummary,
         durationMs: completedAt - startedAt
     };
@@ -49,10 +54,10 @@ export async function verifyResult() {
     if (persistedReport.status !== "succeeded"
             || persistedReport.message !== message
             || !persistedReport.testCaseSummary
-            || persistedReport.testCaseSummary.total !== simulatedTestCaseCount
+            || persistedReport.testCaseSummary.total !== testCaseCount
             || persistedReport.testCaseSummary.passed
                 + persistedReport.testCaseSummary.failed
-                    !== simulatedTestCaseCount) {
+                    !== testCaseCount) {
         throw new Error("Hello World test report verification failed");
     }
 

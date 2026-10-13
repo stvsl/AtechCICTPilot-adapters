@@ -108,7 +108,7 @@
             "id": "VCAR_EA_SOFTWARE_PATH",
             "nameCN": "VCarEA 软件路径",
             "nameEN": "VCarEA Software Path",
-            "type": "string_url_file",
+            "type": "file",
             "fileExtension": ".exe",
             "required": false
         },
@@ -116,14 +116,14 @@
             "id": "VCAR_EA_WORK_DIR",
             "nameCN": "VCarEA 工作目录",
             "nameEN": "VCarEA Work Directory",
-            "type": "string_url_dir",
+            "type": "directory",
             "required": false
         },
         {
             "id": "VCAR_EA_DEVICE_CONFIG_PATH",
             "nameCN": "VCarEA 设备配置路径",
             "nameEN": "VCarEA Device Configuration Path",
-            "type": "string_url_file",
+            "type": "file",
             "fileExtension": ".zip",
             "required": false
         }

@@ -14,14 +14,75 @@
         "ApiVersion": "1.0",
         "Language": "javascript"
     },
+    "PlatformEngineeringInfo": [
+        {
+            "EngineeringPackageId": "CANOE_TEST_PACKAGE_TEST_MODEL",
+            "EngineeringPackageNameCN": "CANoE Test Model 工程",
+            "EngineeringPackageNameEN": "CANoE Test Model Package"
+        },
+        {
+            "EngineeringPackageId": "CANOE_TEST_PACKAGE_TEST_UNIT",
+            "EngineeringPackageNameCN": "CANoE Test Unit 工程",
+            "EngineeringPackageNameEN": "CANoE Test Unit Package"
+        }
+    ],
     "Permissions": {},
     "CallingRuntime": [],
     "SelfExaminationAbility": true,
     "RequirementProperty": [
         {
+            "id": "CANOE_PROJECT",
+            "nameCN": "CANoe 工程文件",
+            "nameEN": "CANoe Project File",
+            "type": "file",
+            "fileExtension": ".zip",
+            "required": true,
+            "platform": {
+                "type": "EngineeringPackage",
+                "tags": [
+                    "CANOE_TEST_PACKAGE_TEST_MODEL",
+                    "CANOE_TEST_PACKAGE_TEST_UNIT"
+                ]
+            }
+        },
+        {
+            "id": "TEST_CASE_IDS",
+            "nameCN": "测试用例",
+            "nameEN": "Test Case",
+            "type": "text_file",
+            "fileExtension": ".json|.txt",
+            "required": false,
+            "platform": {
+                "type": "CaseSelection",
+                "tags": []
+            }
+        },
+        {
             "id": "WAIT_DURATION_SECONDS",
             "nameCN": "等待测试时长（秒，0-600）",
             "nameEN": "Test Wait Duration (seconds, 0-600)",
+            "type": "integer",
+            "required": true,
+            "platform": {
+                "type": "Original",
+                "tags": []
+            }
+        },
+        {
+            "id": "TEST_CASE_COUNT",
+            "nameCN": "模拟测试用例条数（1-100000）",
+            "nameEN": "Simulated Test Case Count (1-100000)",
+            "type": "integer",
+            "required": true,
+            "platform": {
+                "type": "Original",
+                "tags": []
+            }
+        },
+        {
+            "id": "TEST_CASE_DURATION_MS",
+            "nameCN": "每条测试用例的模拟执行时长（毫秒，0-60000）",
+            "nameEN": "Simulated Execution Duration per Test Case (milliseconds, 0-60000)",
             "type": "integer",
             "required": true,
             "platform": {

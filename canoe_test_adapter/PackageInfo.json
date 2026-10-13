@@ -170,7 +170,7 @@
             "id": "CANOE_PROJECT_DIR",
             "nameCN": "任务工作区根目录",
             "nameEN": "Task Workspace Root",
-            "type": "string_url_dir",
+            "type": "directory",
             "required": false
         },
         {

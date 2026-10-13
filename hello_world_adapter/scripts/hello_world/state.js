@@ -4,6 +4,8 @@
  * 状态仅用于同一次节点执行；prepareWorkspace 每次都会先重置，避免复用上一次执行结果。
  */
 let waitDurationSeconds = null;
+let testCaseCount = null;
+let testCaseDurationMs = null;
 let startedAt = 0;
 let completedAt = 0;
 let helloWorldCompleted = false;
@@ -16,6 +18,8 @@ let testCaseSummary = {
 // 在准备工作区时清空所有阶段间数据，建立一次新的执行上下文。
 export function resetExecutionState() {
     waitDurationSeconds = null;
+    testCaseCount = null;
+    testCaseDurationMs = null;
     startedAt = 0;
     completedAt = 0;
     helloWorldCompleted = false;
@@ -26,15 +30,19 @@ export function resetExecutionState() {
     };
 }
 
-// 参数校验阶段确认输入后保存时长，执行阶段再从这里读取。
-export function setWaitDurationSeconds(value) {
-    waitDurationSeconds = value;
+// 参数校验阶段确认输入后保存全部执行参数，执行阶段再从这里读取。
+export function setTestParameters(parameters) {
+    waitDurationSeconds = parameters.waitDurationSeconds;
+    testCaseCount = parameters.testCaseCount;
+    testCaseDurationMs = parameters.testCaseDurationMs;
 }
 
 // 返回当前状态快照，调用方只读取状态，修改必须通过专用函数完成。
 export function executionState() {
     return {
         waitDurationSeconds,
+        testCaseCount,
+        testCaseDurationMs,
         startedAt,
         completedAt,
         helloWorldCompleted,

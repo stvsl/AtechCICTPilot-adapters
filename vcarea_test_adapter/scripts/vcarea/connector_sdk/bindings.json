@@ -1,0 +1,28 @@
+{
+  "schema": "atech.dllnet",
+  "version": 1,
+  "architecture": "any",
+  "aliases": {
+    "Connect": {
+      "kind": "staticMethod",
+      "type": "KY.VCar.Central.Connector.Sdk.ConnectorServiceClient",
+      "member": "Connect",
+      "parameterTypes": ["KY.VCar.Central.Connector.Sdk.ConnectorServiceOptions"],
+      "returnType": "KY.VCar.Central.Connector.Sdk.ConnectorServiceClient"
+    },
+    "TryGetConnectionInfo": {
+      "kind": "method",
+      "type": "KY.VCar.Central.Connector.Sdk.ConnectorServiceClient",
+      "member": "TryGetConnectionInfo",
+      "parameterTypes": ["System.String"],
+      "returnType": "System.Object"
+    },
+    "Dispose": {
+      "kind": "method",
+      "type": "KY.VCar.Central.Connector.Sdk.ConnectorServiceClient",
+      "member": "Dispose",
+      "parameterTypes": [],
+      "returnType": "System.Void"
+    }
+  }
+}

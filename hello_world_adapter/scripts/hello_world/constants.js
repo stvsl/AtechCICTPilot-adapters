@@ -6,17 +6,14 @@
 // 完成工作负载后记录到日志、返回值和报告中的固定消息。
 export const message = "Hello, World!";
 
-// 输入参数的上限与 PackageInfo.json 中声明的 0-600 秒范围一致。
+// 输入参数的上限与 PackageInfo.json 中声明的范围一致。
 export const maximumWaitDurationSeconds = 600;
+export const minimumTestCaseCount = 1;
+export const maximumTestCaseCount = 100000;
+export const maximumTestCaseDurationMs = 60000;
 
-// 模拟测试执行固定覆盖 10000 个用例，编号从 CT_TEST_CASE_01 开始。
-export const simulatedTestCaseCount = 10000;
-
-// 每处理一批用例便更新一次批量执行进度。
-export const simulatedTestCaseBatchSize = 100;
-
-// 每条测试用例输出之间间隔 5 毫秒，模拟真实的逐条执行节奏。
-export const simulatedTestCaseOutputDelayMs = 5;
+// 无论用例总数多少，批量执行进度最多上报 100 次，避免进度事件数量随配置增长。
+export const simulatedTestCaseProgressReportLimit = 100;
 
 // 插件执行中间数据只写入当前节点私有的工作区。
 export const workspaceDirectoryUri = "workspace://hello-world";

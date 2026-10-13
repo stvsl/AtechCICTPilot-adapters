@@ -6,6 +6,11 @@
 
 ## 依赖
 
+Connector 接入使用 `scripts/vcarea/connector_sdk` 中由 DLL 工作台生成的包装库：
+业务代码调用 `sdk.Connect()`、`client.TryGetConnectionInfo()` 和 `client.Dispose()`。
+接口配置在同目录的 `bindings.json`；调整 SDK 声明后通过工作台重新生成。
+包装库隐藏通用调用、重载选择和对象句柄管理，仍复用受限 dllnet 运行时。
+
 - 插件运行时必须提供 `@atech/dllnet` 及 `dllnet_worker.exe`。
 - VCarEA 安装目录必须包含 `KY.VCar.Central.Connector.Sdk.dll`；中心服务路径按
   `CentralServices\\VCarEA.Central.Service.exe` 解析。
