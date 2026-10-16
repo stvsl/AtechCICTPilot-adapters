@@ -46,10 +46,10 @@ stages {
             runjs("scripts/vcarea_test.js", "startMeasurement")
         }
     }
-    stage("执行测试用例") {
-        // Case 完成以宿主转发的 Run/Stop 或 Case/Stop 事件判定（主题带 KY/ 前缀）；
-        // 单 Case 执行超时默认 30 分钟（ExecutionTimeoutMs）。
-        timeout(1800000)
+    stage("执行测试计划") {
+        // Plan 完成以宿主转发的 Plan/Stop 或 Run/Stop 事件判定（主题带 KY/ 前缀）；
+        // 单 Plan 执行超时默认 30 分钟（ExecutionTimeoutMs），阶段总上限 24 小时。
+        timeout(86400000)
         steps {
             runjs("scripts/vcarea_test.js", "execute")
         }

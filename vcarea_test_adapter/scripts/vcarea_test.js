@@ -9,7 +9,6 @@ import {
 } from "./vcarea/connector.js";
 import {
     TOPICS,
-    REPORT_TOPICS,
     cleanupTimeout,
     configureResponseTimeout,
     connectEaApi,
@@ -21,13 +20,13 @@ import {
     isConnected,
     isEnvironmentNotRunningError,
     probeExecutionPort,
-    receiveMessage,
     reportEventCount,
     reportEventsSince,
     request,
     resetProtocol,
-    routeProtocolMessage,
     waitForProjectConfigurations,
+    waitForProjectPlans,
+    waitForPlanStop,
 } from "./vcarea/protocol.js";
 import { downloadReport } from "./vcarea/report.js";
 
@@ -44,13 +43,12 @@ const SUPPORTED_REPORT_TYPES = ["html", "pdf", "xlsx", "zip"];
 const DEFAULT_PROJECT_READY_TIMEOUT_MS = 120000;
 const DEFAULT_PROJECT_READY_PROBE_INTERVAL_MS = 500;
 const DEFAULT_ENVIRONMENT_SETTLE_MS = 1000;
-const DEFAULT_REPORT_EVENT_SETTLE_MS = 500;
 const DEFAULT_REPORT_RENDER_TIMEOUT_MS = 30000;
 
 /**
  * 报告渲染完成后出现在报告目录中的旧版格式后缀。
  *
- * 实测 VCarEA 在 Case 停止后异步渲染报告目录：`data/vcar_ea_data_report.db`
+ * 实测 VCarEA 在执行停止后异步渲染报告目录：`data/vcar_ea_data_report.db`
  * 先落盘，约 2~3 秒后 `<报告名>.html`、`<报告名>.pdf`、`<报告名>.xlsx`
  * 才写入；渲染完成前调用报告下载接口只能得到仅含数据库的 ZIP。
  */
@@ -66,26 +64,26 @@ let deviceConfigurationPath = "";
 let projectOpened = false;
 let projectReady = false;
 let environmentStarted = false;
-let activeCasePath = "";
-let activeCaseMayBeOpen = false;
+let activePlanPath = "";
+let activePlanMayBeOpen = false;
 let testConfigurationPath = "";
 let testbenchConfigurationPath = "";
-let requestedCases = [];
-let selectedCases = [];
+let requestedPlans = [];
+let selectedPlans = [];
 let reportTypes = [];
 let executionResults = [];
 let reportDownloads = [];
 let collectionErrors = [];
 /**
- * 工程文件清单缓存（按扩展名）。
+ * 工程文件清单与扩展名索引缓存。
  *
- * 实测：VCarEA 工程可包含上千个 Case，而 `fs.list` 每次都会递归遍历整个工程
- * 目录并为每个条目做一次文件系统查询；逐条路径解析再枚举一次会把配置阶段
- * 拖到分钟级（2026-09-24 实测 1363 个 Case 的任务在“打开工程并配置测试环境”
- * 阶段耗尽 600 秒阶段超时），因此按扩展名缓存一次枚举与归一化结果。
+ * VCarEA 工程可能包含大量执行文件与报告产物，而 `fs.list` 每次都会递归遍历
+ * 整个工程目录并为每个条目做一次文件系统查询；逐条路径解析再枚举一次会把
+ * 配置阶段拖到分钟级，因此全工程只枚举一次，再按扩展名缓存归一化索引。
  * 工程目录在任务内只读，缓存不需要失效。
  */
 const projectFileCache = new Map();
+let projectEntryCache = null;
 
 function optionInteger(name, fallback, minimum, maximum) {
     const value = Number(task.option(name, fallback));
@@ -174,8 +172,8 @@ function uniqueStrings(values) {
     return result;
 }
 
-function parseRequestedCases() {
-    const text = optionalRequirementText("TEST_CASE_IDS").trim();
+function parseRequestedPlans() {
+    const text = optionalRequirementText("TEST_PLAN_IDS").trim();
     if (text === "") {
         return [];
     }
@@ -184,14 +182,14 @@ function parseRequestedCases() {
         try {
             value = JSON.parse(text);
         } catch (error) {
-            throw new Error(`TEST_CASE_IDS 不是有效 JSON：${error.message}`);
+            throw new Error(`TEST_PLAN_IDS 不是有效 JSON：${error.message}`);
         }
         if (Array.isArray(value)) {
             return uniqueStrings(value.map((item) => String(item).trim())
                 .filter((item) => item !== ""));
         }
         if (value !== null && typeof value === "object") {
-            for (const key of ["ids", "testCaseIds", "TestCaseIds", "cases"]) {
+            for (const key of ["ids", "testPlanIds", "TestPlanIds", "plans"]) {
                 if (Array.isArray(value[key])) {
                     return uniqueStrings(value[key]
                         .map((item) => String(item).trim())
@@ -199,7 +197,7 @@ function parseRequestedCases() {
                 }
             }
         }
-        throw new Error("TEST_CASE_IDS JSON 必须是数组或包含用例数组的对象");
+        throw new Error("TEST_PLAN_IDS JSON 必须是数组或包含计划数组的对象");
     }
     return uniqueStrings(text.split(/[\r\n,;]+/)
         .map((item) => item.trim()).filter((item) => item !== ""));
@@ -236,10 +234,9 @@ function parseReportTypes() {
  * 返回候选数组与两张归一化路径索引：候选数组用于名称回退匹配，索引表用于
  * 路径精确匹配，避免逐条路径扫描整个清单。
  *
- * 实测：VCarEA 工程可包含上千个 Case，而 `fs.list` 每次都会递归遍历整个
- * 工程目录并为每个条目做一次文件系统查询；既不缓存枚举、又逐条扫描清单时，
- * 配置阶段会耗尽阶段超时（2026-09-24 实测 1363 个 Case 的任务触发 600 秒
- * 超时）。工程目录在任务内只读，缓存不需要失效。
+ * VCarEA 工程可能包含大量执行文件与报告产物，而 `fs.list` 每次都会递归遍历
+ * 整个工程目录并为每个条目做一次文件系统查询；这里复用全工程枚举结果，
+ * 再缓存当前扩展名的索引。工程目录在任务内只读，缓存不需要失效。
  */
 function projectInventory(extension) {
     const suffix = extension.toLowerCase();
@@ -248,7 +245,10 @@ function projectInventory(extension) {
         const candidates = [];
         const byNativePath = new Map();
         const byRelativePath = new Map();
-        for (const entry of fs.list(projectRootUri, true)) {
+        if (projectEntryCache === null) {
+            projectEntryCache = fs.list(projectRootUri, true);
+        }
+        for (const entry of projectEntryCache) {
             if (entry.type !== "file"
                     || !entry.name.toLowerCase().endsWith(suffix)) {
                 continue;
@@ -307,17 +307,18 @@ function resetExecutionState() {
     projectOpened = false;
     projectReady = false;
     environmentStarted = false;
-    activeCasePath = "";
-    activeCaseMayBeOpen = false;
+    activePlanPath = "";
+    activePlanMayBeOpen = false;
     testConfigurationPath = "";
     testbenchConfigurationPath = "";
-    requestedCases = [];
-    selectedCases = [];
+    requestedPlans = [];
+    selectedPlans = [];
     reportTypes = [];
     executionResults = [];
     reportDownloads = [];
     collectionErrors = [];
     projectFileCache.clear();
+    projectEntryCache = null;
 }
 
 function requirePrepared() {
@@ -472,8 +473,8 @@ function chooseConfiguration(entries, extension, description) {
     return available[0];
 }
 
-function matchesCaseSelector(candidate, selector) {
-    // TODO: 文档的 Case 执行接口只接受路径，没有定义可用于筛选的 Case ID；
+function matchesPlanSelector(candidate, selector) {
+    // TODO: 文档的 Plan 执行接口只接受路径，没有定义可用于筛选的 Plan ID；
     // 暂按相对路径、绝对路径、文件名或无扩展名文件名匹配任务输入。
     const normalizedSelector = normalizedMatchPath(selector);
     const relative = normalizedMatchPath(candidate.Path);
@@ -484,26 +485,31 @@ function matchesCaseSelector(candidate, selector) {
         || normalizedSelector === name || normalizedSelector === stem;
 }
 
-function selectCases(entries) {
-    const inventory = inventoryPaths(entries, ".case");
-    const available = inventory.length > 0
-        ? inventory : localProjectPaths(".case");
+function selectPlans(entries) {
+    const available = inventoryPaths(entries, ".plan");
     if (available.length === 0) {
-        throw new Error("VCarEA 工程中没有可执行的 Case");
+        const localPlans = localProjectPaths(".plan");
+        if (localPlans.length > 0) {
+            throw new Error(
+                `任务工程中存在 ${localPlans.length} 个 .plan 文件，`
+                + "但 VCarEA 工程树未返回可执行 Plan");
+        }
+        throw new Error("VCarEA 工程中没有可执行的 Plan");
     }
-    if (requestedCases.length === 0) {
+    if (requestedPlans.length === 0) {
         return available;
     }
     const selected = [];
-    for (const selector of requestedCases) {
+    for (const selector of requestedPlans) {
         const matches = available.filter((candidate) =>
-            matchesCaseSelector(candidate, selector));
+            matchesPlanSelector(candidate, selector));
         if (matches.length === 0) {
-            throw new Error(`TEST_CASE_IDS 中的用例 [${selector}] 不在工程 Case 列表中`);
+            throw new Error(
+                `TEST_PLAN_IDS 中的计划 [${selector}] 不在工程 Plan 列表中`);
         }
         if (matches.length > 1) {
             throw new Error(
-                `TEST_CASE_IDS 中的用例 [${selector}] 匹配多个 Case，请提供相对路径`);
+                `TEST_PLAN_IDS 中的计划 [${selector}] 匹配多个 Plan，请提供相对路径`);
         }
         if (!selected.some((candidate) =>
             normalizedMatchPath(candidate.NativePath)
@@ -540,60 +546,12 @@ function updateVariables() {
     });
 }
 
-/**
- * 等待当前 Case 执行结束。
- *
- * 实测：Case/Execute 应答只表示执行已启动，执行结束由宿主转发的
- * Run/Stop 或 Case/Stop 事件表示（本版本不转发 Start 类事件）。
- * 先扫描缓冲区里已有的停事件（极短用例的事件可能早于本函数到达），
- * 再继续接收；收到首个停事件后保留 ReportEventSettleMs 收尾窗口
- * 吸纳迟到事件；超过 timeoutMs 仍未收到停事件才报错。
- */
-function waitForCaseStop(startIndex, timeoutMs) {
-    const settleMs = optionInteger(
-        "ReportEventSettleMs", DEFAULT_REPORT_EVENT_SETTLE_MS, 0, 60000);
-    const deadline = Date.now() + timeoutMs;
-    let stopObservedAt = 0;
-    let scanned = startIndex;
-    const scanBufferedEvents = () => {
-        const snapshot = reportEventsSince(scanned);
-        scanned += snapshot.DroppedEventCount + snapshot.Events.length;
-        for (const event of snapshot.Events) {
-            if (stopObservedAt === 0
-                    && (event.Topic === REPORT_TOPICS.caseStop
-                        || event.Topic === REPORT_TOPICS.runStop)) {
-                stopObservedAt = Date.now();
-            }
-        }
-    };
-    scanBufferedEvents();
-    while (Date.now() < deadline) {
-        task.checkCancelled();
-        if (stopObservedAt > 0 && Date.now() - stopObservedAt >= settleMs) {
-            return;
-        }
-        const message = receiveMessage(Math.max(
-            1, Math.min(50, deadline - Date.now())));
-        if (message === null || message === undefined) {
-            continue;
-        }
-        if (routeProtocolMessage(message)) {
-            scanBufferedEvents();
-        }
-    }
-    if (stopObservedAt === 0) {
-        throw new Error(
-            `等待 VCarEA Case 执行完成超时（${timeoutMs} ms）：`
-            + "未收到 Run/Stop 或 Case/Stop 报告事件");
-    }
-}
-
 function numericFailureCount(value) {
     const number = Number(value);
     return Number.isFinite(number) && number > 0 ? number : 0;
 }
 
-function evaluateCaseStatus(events) {
+function evaluatePlanStatus(events) {
     let observedVerdict = false;
     let failed = false;
     for (const event of events) {
@@ -624,38 +582,38 @@ function evaluateCaseStatus(events) {
     return observedVerdict ? "passed" : "completed";
 }
 
-function executionRequestData(casePath) {
+function executionRequestData(planPath) {
     // 文档明确 ProjectPath、TCF、TBF 三个路径仅 Linux 版本需要；当前清单
     // 启动 Windows VCarEA，因此不向 Windows 服务发送这些可选字段。
     return {
         OperationType: 0,
-        CasePath: casePath,
+        PlanPath: planPath,
         UpdateVariables: updateVariables(),
     };
 }
 
-function stopActiveCase(timeoutMs) {
-    if (activeCasePath === "" || !isConnected()) {
+function stopActivePlan(timeoutMs) {
+    if (activePlanPath === "" || !isConnected()) {
         return;
     }
     request(
-        TOPICS.caseExecuteRequest,
-        TOPICS.caseExecuteResponse,
-        {OperationType: 1, CasePath: activeCasePath},
+        TOPICS.planExecuteRequest,
+        TOPICS.planExecuteResponse,
+        {OperationType: 1, PlanPath: activePlanPath},
         timeoutMs);
 }
 
-function closeActiveCase(timeoutMs) {
-    if (!activeCaseMayBeOpen || activeCasePath === "" || !isConnected()) {
+function closeActivePlan(timeoutMs) {
+    if (!activePlanMayBeOpen || activePlanPath === "" || !isConnected()) {
         return;
     }
     request(
-        TOPICS.caseOperationRequest,
-        TOPICS.caseOperationResponse,
-        {OperationType: 1, CasePath: activeCasePath},
+        TOPICS.planOperationRequest,
+        TOPICS.planOperationResponse,
+        {OperationType: 1, PlanPath: activePlanPath},
         timeoutMs);
-    activeCaseMayBeOpen = false;
-    activeCasePath = "";
+    activePlanMayBeOpen = false;
+    activePlanPath = "";
 }
 
 function addCollectionError(message) {
@@ -688,11 +646,11 @@ function publishExecutionSummary() {
             WorkDirectory: configuredWorkDirectory,
             DeviceConfigurationPath: deviceConfigurationPath,
         },
-        RequestedCases: requestedCases,
+        RequestedPlans: requestedPlans,
         ReportTypes: reportTypes,
         NativeReportType: "zip",
         Status: overallStatus(),
-        Cases: executionResults,
+        Plans: executionResults,
         Reports: reportDownloads,
         CollectionErrors: collectionErrors,
     };
@@ -707,7 +665,7 @@ function publishExecutionSummary() {
 /**
  * 等待 VCarEA 渲染完成报告目录。
  *
- * 实测 Case 停止后报告目录先写入数据库文件，约 2~3 秒后 html/pdf/xlsx
+ * 实测执行停止后报告目录先写入数据库文件，约 2~3 秒后 html/pdf/xlsx
  * 才渲染完成；在此之前下载报告只能得到仅含数据库的 ZIP（2026-09-24 实测
  * 5359 字节，而完整报告为 609889 字节）。这里按固定间隔轮询工程目录中的
  * 报告目录，等到请求的格式文件全部出现再下载；仅请求 ZIP 时等待完整的
@@ -759,7 +717,7 @@ export function waitForReportRendered(reportPath) {
     return false;
 }
 
-/** 阶段 1：校验并解压工程包，解析用例选择及报告格式。 */
+/** 阶段 1：校验并解压工程包，解析测试计划选择及报告格式。 */
 export function prepare(projectPackage) {
     resetExecutionState();
     resetProtocol();
@@ -786,7 +744,11 @@ export function prepare(projectPackage) {
     }
     projectFileUri = requireSingleProjectFile();
     projectPath = fs.nativePath(projectFileUri);
-    requestedCases = parseRequestedCases();
+    const planFiles = projectFiles(".plan");
+    if (planFiles.length === 0) {
+        throw new Error("VCarEA 工程目录中未找到 .plan 测试计划文件");
+    }
+    requestedPlans = parseRequestedPlans();
     reportTypes = parseReportTypes();
     configuredWorkDirectory = optionalDevice("VCAR_EA_WORK_DIR");
     deviceConfigurationPath = optionalDevice("VCAR_EA_DEVICE_CONFIG_PATH");
@@ -798,7 +760,8 @@ export function prepare(projectPackage) {
     }
     initializeProtocol();
     task.info(
-        `VCarEA 工程已准备：${projectPath}；用例筛选 ${requestedCases.length} 项；`
+        `VCarEA 工程已准备：${projectPath}；发现 Plan ${planFiles.length} 个；`
+        + `计划筛选 ${requestedPlans.length} 项；`
         + `报告格式 ${reportTypes.join("、")}`);
     task.progress(5);
 }
@@ -828,7 +791,7 @@ export function connect() {
     task.progress(25);
 }
 
-/** 阶段 5：打开工程，等待后台初始化完成，配置 TCF/TBF，然后确定待执行 Case。 */
+/** 阶段 5：打开工程，等待后台初始化完成，配置 TCF/TBF，然后确定待执行 Plan。 */
 export function configure() {
     requirePrepared();
     if (!isConnected()) {
@@ -868,17 +831,9 @@ export function configure() {
         readyTimeoutMs, probeIntervalMs);
     projectReady = true;
     task.info(`VCarEA 工程后台初始化完成（等待 ${ready.WaitedMs} ms）`);
-    const casesResponse = request(
-        TOPICS.casesRequest,
-        TOPICS.casesResponse,
-        undefined,
-        stageTimeoutMs);
     const openedConfigurations = responseArray(opened, "Configurations");
     const configurations = ready.Configurations.length > 0
         ? ready.Configurations : openedConfigurations;
-    const openedCases = responseArray(opened, "Cases");
-    const queriedCases = responseArray(casesResponse, "");
-    const cases = queriedCases.length > 0 ? queriedCases : openedCases;
 
     const tcf = chooseConfiguration(configurations, ".tcf", "测试配置");
     const tbf = chooseConfiguration(configurations, ".tbf", "测试台配置");
@@ -903,10 +858,13 @@ export function configure() {
         remainingReadyMs);
     testConfigurationPath = tcf.NativePath;
     testbenchConfigurationPath = tbf.NativePath;
-    selectedCases = selectCases(cases);
+    task.info(
+        `等待 VCarEA 返回可执行 Plan（最长 ${readyTimeoutMs} ms）`);
+    const plans = waitForProjectPlans(readyTimeoutMs, probeIntervalMs);
+    selectedPlans = selectPlans(plans.Plans);
     task.info(
         `VCarEA 工程已打开并配置：TCF=${tcf.Path}；TBF=${tbf.Path}；`
-        + `待执行 Case=${selectedCases.length}`);
+        + `待执行 Plan=${selectedPlans.length}`);
     task.progress(45);
 }
 
@@ -943,54 +901,57 @@ export function startMeasurement() {
     task.progress(55);
 }
 
-/** 阶段 7：依次打开并执行选中的 Case，保留接口应答及报告事件状态。 */
+/** 阶段 7：依次打开并执行选中的 Plan，保留接口应答及报告事件状态。 */
 export function execute() {
     if (!environmentStarted) {
         throw new Error("执行测试前必须先启动 VCarEA 实验环境");
     }
-    if (selectedCases.length === 0) {
-        throw new Error("没有可执行的 VCarEA Case");
+    if (selectedPlans.length === 0) {
+        throw new Error("没有可执行的 VCarEA Plan");
     }
-    for (let index = 0; index < selectedCases.length; ++index) {
+    for (let index = 0; index < selectedPlans.length; ++index) {
         task.checkCancelled();
-        const selected = selectedCases[index];
-        activeCasePath = selected.NativePath;
+        const selected = selectedPlans[index];
+        activePlanPath = selected.NativePath;
         const eventStart = reportEventCount();
+        let containedCases = [];
         let response = null;
         let executionFailed = false;
         try {
-            // 请求超时时无法判断 EA 是否已经打开 Case，因此在发送前进入待清理状态。
-            activeCaseMayBeOpen = true;
-            request(
-                TOPICS.caseOperationRequest,
-                TOPICS.caseOperationResponse,
-                {OperationType: 0, CasePath: activeCasePath});
+            // 请求超时时无法判断 EA 是否已经打开 Plan，因此在发送前进入待清理状态。
+            activePlanMayBeOpen = true;
+            const openedPlan = request(
+                TOPICS.planOperationRequest,
+                TOPICS.planOperationResponse,
+                {OperationType: 0, PlanPath: activePlanPath});
+            containedCases = responseArray(openedPlan, "");
             task.info(
-                `执行 VCarEA Case ${index + 1}/${selectedCases.length}：${selected.Path}`);
-            // Case/Execute 应答与执行结束事件共享单个 Case 的执行超时预算。
-            const caseDeadline = Date.now() + executionTimeout();
+                `执行 VCarEA Plan ${index + 1}/${selectedPlans.length}：`
+                + `${selected.Path}（包含 ${containedCases.length} 个 Case）`);
+            // Plan/Execute 应答与执行结束事件共享单个 Plan 的执行超时预算。
+            const planDeadline = Date.now() + executionTimeout();
             response = request(
-                TOPICS.caseExecuteRequest,
-                TOPICS.caseExecuteResponse,
-                executionRequestData(activeCasePath),
-                Math.max(1, caseDeadline - Date.now()));
-            // Case/Execute 应答只表示执行已启动；执行结束由停止事件判定。
-            waitForCaseStop(eventStart, Math.max(1, caseDeadline - Date.now()));
+                TOPICS.planExecuteRequest,
+                TOPICS.planExecuteResponse,
+                executionRequestData(activePlanPath),
+                Math.max(1, planDeadline - Date.now()));
+            // 子 Case 的停止事件不能结束 Plan；只等待 Plan/Stop 或 Run/Stop。
+            waitForPlanStop(eventStart, Math.max(1, planDeadline - Date.now()));
         } catch (error) {
             executionFailed = true;
             throw error;
         } finally {
-            if (activeCaseMayBeOpen && isConnected()) {
+            if (activePlanMayBeOpen && isConnected()) {
                 const timeoutMs = cleanupTimeout();
                 if (executionFailed) {
                     cleanupCall(
-                        "停止执行失败的 VCarEA Case",
-                        () => stopActiveCase(timeoutMs));
+                        "停止执行失败的 VCarEA Plan",
+                        () => stopActivePlan(timeoutMs));
                     cleanupCall(
-                        "关闭执行失败的 VCarEA Case",
-                        () => closeActiveCase(timeoutMs));
+                        "关闭执行失败的 VCarEA Plan",
+                        () => closeActivePlan(timeoutMs));
                 } else {
-                    closeActiveCase(timeoutMs);
+                    closeActivePlan(timeoutMs);
                 }
             }
         }
@@ -999,14 +960,15 @@ export function execute() {
         const reportPath = String(
             response && response.Data && response.Data.ReportPath || "").trim();
         executionResults.push({
-            Case: selected.Path,
-            Status: evaluateCaseStatus(eventSnapshot.Events),
+            Plan: selected.Path,
+            ContainedCases: containedCases,
+            Status: evaluatePlanStatus(eventSnapshot.Events),
             ReportPath: reportPath,
             Response: response,
             ReportEvents: eventSnapshot.Events,
             DroppedReportEventCount: eventSnapshot.DroppedEventCount,
         });
-        task.progress(55 + Math.round((index + 1) / selectedCases.length * 35));
+        task.progress(55 + Math.round((index + 1) / selectedPlans.length * 35));
     }
 }
 
@@ -1015,35 +977,35 @@ export function collectArtifacts() {
     let reportIndex = 0;
     for (const result of executionResults) {
         if (result.ReportPath === "") {
-            addCollectionError(`Case [${result.Case}] 的执行应答未返回 ReportPath`);
+            addCollectionError(`Plan [${result.Plan}] 的执行应答未返回 ReportPath`);
             continue;
         }
         reportIndex += 1;
         try {
-            // 实测 Case 停止后 VCarEA 异步渲染报告：数据库先落盘、html/pdf/xlsx
+            // 实测执行停止后 VCarEA 异步渲染报告：数据库先落盘、html/pdf/xlsx
             // 约 2~3 秒后才写入；渲染完成前下载只能得到仅含数据库的 ZIP。
             waitForReportRendered(result.ReportPath);
             const downloaded = downloadReport(
                 result.ReportPath, reportIndex, reportTypes);
             reportDownloads.push({
-                Case: result.Case,
+                Plan: result.Plan,
                 ReportPath: result.ReportPath,
                 ...downloaded,
             });
         } catch (error) {
             addCollectionError(
-                `下载 Case [${result.Case}] 报告失败：${error.message}`);
+                `下载 Plan [${result.Plan}] 报告失败：${error.message}`);
         }
     }
     publishExecutionSummary();
-    const failedCases = executionResults
+    const failedPlans = executionResults
         .filter((result) => result.Status === "failed")
-        .map((result) => result.Case);
+        .map((result) => result.Plan);
     task.progress(100);
-    if (failedCases.length > 0 || collectionErrors.length > 0) {
+    if (failedPlans.length > 0 || collectionErrors.length > 0) {
         const failures = [];
-        if (failedCases.length > 0) {
-            failures.push(`VCarEA 测试失败：${failedCases.join("、")}`);
+        if (failedPlans.length > 0) {
+            failures.push(`VCarEA 测试失败：${failedPlans.join("、")}`);
         }
         failures.push(...collectionErrors);
         throw new Error(failures.join("；"));
@@ -1085,11 +1047,11 @@ function stopEnvironment(timeoutMs) {
 export function cleanup() {
     const timeoutMs = cleanupTimeout();
     if (isConnected()) {
-        if (activeCasePath !== "") {
-            cleanupCall("停止活动 VCarEA Case", () => stopActiveCase(timeoutMs));
+        if (activePlanPath !== "") {
+            cleanupCall("停止活动 VCarEA Plan", () => stopActivePlan(timeoutMs));
         }
-        if (activeCaseMayBeOpen) {
-            cleanupCall("关闭活动 VCarEA Case", () => closeActiveCase(timeoutMs));
+        if (activePlanMayBeOpen) {
+            cleanupCall("关闭活动 VCarEA Plan", () => closeActivePlan(timeoutMs));
         }
         if (environmentStarted) {
             cleanupCall("停止 VCarEA 实验环境",

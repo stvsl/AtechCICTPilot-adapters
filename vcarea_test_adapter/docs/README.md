@@ -2,7 +2,8 @@
 
 适配器保留旧版 Connector SDK 启动与连接配置查询流程，并通过
 `EA外部调用接口.md` 声明的 MQTT 3.1.1 接口打开工程、配置测试环境、
-执行 Case，最后下载 VCarEA 生成的 ZIP 报告。
+执行 Plan，最后下载 VCarEA 生成的 ZIP 报告。Plan 内引用的 `.case` 由 VCarEA
+负责解析和调度，适配器不再枚举或直接执行 `.case`。
 
 ## 依赖
 
@@ -22,22 +23,22 @@ Connector 接入使用 `scripts/vcarea/connector_sdk` 中由 DLL 工作台生成
 
 | 阶段 | 导出函数 | 说明 |
 | --- | --- | --- |
-| 准备 VCarEA 测试工程 | `prepare` | 解压工程 ZIP，定位唯一的 `.hlt` 文件，解析 Case 筛选条件和报告格式 |
+| 准备 VCarEA 测试工程 | `prepare` | 解压工程 ZIP，定位唯一的 `.hlt` 和至少一个 `.plan` 文件，解析 Plan 筛选条件和报告格式 |
 | 启动 VCarEA | `launch` | 默认启动 `VCarEA.exe` 并等待指定 Connector key 就绪；仅在 `AttachExisting=true` 时复用已有实例 |
 | 获取 MQTT 连接配置 | `readMqttConfig` | 调用 `TryGetConnectionInfo`，发布旧版 `MQTT_CONFIG` 产物，并把实际连接参数交给 MQTT 阶段 |
 | 连接 EA MQTT 服务 | `connect` | 使用 Connector 返回的 broker 参数连接，重试接入握手直至 VCarEA 返回登记成功 |
-| 打开工程并配置测试环境 | `configure` | 打开工程，探测后台初始化完成，配置 TCF/TBF，查询待执行 Case |
+| 打开工程并配置测试环境 | `configure` | 打开工程，探测后台初始化完成，配置 TCF/TBF，并通过 Plans 接口查询待执行 Plan |
 | 启动并等待实验环境就绪 | `startMeasurement` | 启动实验环境（启动应答即就绪，实测同步加载 XIL 环境）；随后对执行端口接口做一次有界观察并记录，不作为失败判据 |
-| 执行测试用例 | `execute` | 逐个打开、执行并等待 `Run/Stop` 或 `Case/Stop` 事件后关闭选中的 Case，采集执行应答及报告事件 |
+| 执行测试计划 | `execute` | 逐个打开、执行并等待 `Plan/Stop` 或 `Run/Stop` 后关闭选中的 Plan；`Case/Stop` 仅作为子 Case 明细采集 |
 | 收集测试报告 | `collectArtifacts` | 先等待 VCarEA 渲染报告目录（数据库先落盘、html/pdf/xlsx 稍后生成），再按 `Report/Download -> Report/Push` 流程下载 ZIP（校验 SHA-256），按需从 ZIP 中提取 html/pdf/xlsx，并发布 JSON 执行摘要 |
-| 清理 | `cleanup` | 停止活动 Case，关闭 Case、实验环境和工程，断开 MQTT，并停止本次插件启动的 VCarEA |
+| 清理 | `cleanup` | 停止活动 Plan，关闭 Plan、实验环境和工程，断开 MQTT，并停止本次插件启动的 VCarEA |
 
 ## 任务输入
 
 | 输入 | 说明 |
 | --- | --- |
 | `VCAR_EA_PROJECT` | 必填的 VCarEA 工程 ZIP；解压后必须且只能包含一个 `.hlt` 文件 |
-| `TEST_CASE_IDS` | 可选的 `.json`/`.txt` 文件；按 Case 相对路径、文件名或无扩展名名称筛选，留空时执行接口返回的全部 Case |
+| `TEST_PLAN_IDS` | 可选的 `.json`/`.txt` 文件；按 Plan 相对路径、绝对路径、文件名或无扩展名名称筛选，留空时执行 Plans 接口返回的全部 Plan |
 | `VCAR_EA_REPORT_TYPE` | 必填；保留旧版 `html`、`pdf`、`xlsx`，并提供原生 `zip`。接口固定推送 ZIP（实测内含 html/pdf/xlsx/sqlite），旧版格式从 ZIP 中提取，ZIP 本体一并保留 |
 
 ## 工位属性
@@ -58,10 +59,9 @@ Connector 接入使用 `scripts/vcarea/connector_sdk` 中由 DLL 工作台生成
   每次启动随机（例如 `127.0.0.1:23804` + GUID 用户名/密码）；文档中的
   `127.0.0.1:11883` / `VCarAPI` 是过期默认值，仅作为协议模块初始值。
 - 报告事件由宿主转发到主 broker，主题带 `KY/` 前缀（订阅
-  `KY/VCar/EA/TestReport/#`）。实测 1.8.4.0826 只转发 `Run/Stop` 与
-  `Case/Stop`（不转发 Start/Step 事件）；`Case/Stop` 载荷包含 `RunID` 与
-  失败计数，`Run/Stop` 的 `ID` 即 `RunID`。单个 Case 完成判据为收到任一
-  停止事件后再保留 `ReportEventSettleMs` 收尾窗口。
+  `KY/VCar/EA/TestReport/#`）。Plan 完成只接受 `Plan/Stop` 或 `Run/Stop`，
+  收到后保留 `ReportEventSettleMs` 收尾窗口。Plan 内每个子 Case 都可能产生
+  `Case/Stop`，该事件只参与结果统计，绝不作为 Plan 完成判据。
 - 文档没有实验环境状态查询接口：`Environment` 启动应答（实测约 12 秒，
   期间同步加载 XIL 环境）即为环境就绪判据；`KY/VCar/EA/Execution/MqttPort`
   接口在 1.8.4.0826 完全不产生应答（执行期间同样如此），适配器只做一次
@@ -72,7 +72,9 @@ Connector 接入使用 `scripts/vcarea/connector_sdk` 中由 DLL 工作台生成
   同时可见才继续（不再按固定时长盲等），超过 `ProjectReadyTimeoutMs` 才报错；
   配置请求仍对“当前项目未找到配置路径”的瞬态应答做有界重试。配置请求
   始终使用任务工程目录中枚举到的真实路径大小写，避免 VCarEA 工程树匹配失败；
-  实测配置列表返回的是绝对路径（以打开工程时传入的目录为前缀）。
+  实测配置列表返回的是绝对路径（以打开工程时传入的目录为前缀）。配置完成后
+  继续轮询 Plans 接口；本地 `.plan` 只用于路径校验和大小写映射，Plans 接口始终
+  为空时不会绕过 VCarEA 工程树直接执行磁盘文件。
 - 实测 VCarEA 1.8.4.0826 同一时刻只处理一个业务接口：并发请求会被立即拒绝
   （`Code=1`、消息“其他接口正在工作，请稍后重试！”），且该拒绝应答**不复用请求
   ID**（宿主重新生成 GUID），按 ID 匹配会把拒绝当成无关消息而一直等到超时。
@@ -91,7 +93,7 @@ Connector 接入使用 `scripts/vcarea/connector_sdk` 中由 DLL 工作台生成
   `[int32 index][int32 length][data]`；ZIP 内实测包含 html、pdf、xlsx 与
   sqlite 数据库。选择旧版格式时适配器从 ZIP 中提取对应文件（ZIP 本体保留），
   提取失败时仅告警并保留 ZIP。
-- 实测 VCarEA 在 Case 停止后异步渲染报告目录：`data/vcar_ea_data_report.db`
+- 实测 VCarEA 在执行停止后异步渲染报告目录：`data/vcar_ea_data_report.db`
   先落盘，约 2~3 秒后 html/pdf/xlsx 才写入；渲染完成前下载报告只能得到
   仅含数据库的 ZIP（实测 5359 字节，完整报告为 609889 字节）。适配器下载前
   按 500 ms 间隔轮询报告目录，等到任务请求的格式（仅请求 ZIP 时等待三种
@@ -109,18 +111,18 @@ Connector 接入使用 `scripts/vcarea/connector_sdk` 中由 DLL 工作台生成
 | --- | --- | --- |
 | `ConnectionKey` | `VCarEA` | Connector 服务 key；也可使用 `VCarEA.Executor` |
 | `AttachExisting` | `false` | 为 `false` 时始终调用 `VCarEA.exe`，避免把残留的 Connector 服务误判为 API 宿主；为 `true` 时只复用已有实例，Connector 服务不可用则直接失败 |
-| `ConstraintUpdate` | `true` | 打开工程及配置 TCF/TBF 时强制更新 Case |
-| `ProjectReadyTimeoutMs` | `120000` | 打开工程应答后等待配置列表出现 TCF/TBF 的总超时 |
+| `ConstraintUpdate` | `true` | 打开工程及配置 TCF/TBF 时强制更新工程执行树 |
+| `ProjectReadyTimeoutMs` | `120000` | 等待配置列表出现 TCF/TBF、以及等待 Plans 接口返回可执行 Plan 的单阶段超时 |
 | `ProjectReadyProbeIntervalMs` | `500` | 工程就绪探测的轮询间隔（100–10000 ms） |
 | `ConfigureResponseTimeoutMs` | `60000` | “打开工程并配置测试环境”阶段单次请求应答超时（打开工程、TCF/TBF 配置、就绪后首次查询共用） |
 | `BusyRetryIntervalMs` | `1000` | 宿主返回“其他接口正在工作”忙拒绝后的重发间隔（100–60000 ms） |
 | `EnvironmentSettleMs` | `1000` | 环境启动应答后的最小稳定等待；设为 0 时立即做执行端口观察 |
 | `ExecutionPortProbeMs` | `3000` | 执行端口查询的一次性探测超时；接口无应答时按未应答记录（1–60000 ms） |
-| `ReportEventSettleMs` | `500` | 收到 `Run/Stop` 或 `Case/Stop` 后的收尾窗口上限；窗口结束即认为当前 Case 完成 |
+| `ReportEventSettleMs` | `500` | 收到 `Plan/Stop` 或 `Run/Stop` 后的收尾窗口上限；窗口结束即认为当前 Plan 完成 |
 | `AccessReadyTimeoutMs` | `120000` | 等待 VCarEA API 接入就绪的总超时 |
 | `AccessResponseTimeoutMs` | `3000` | 单次 API 接入握手的应答超时 |
 | `ResponseTimeoutMs` | `30000` | 普通 MQTT 应答超时 |
-| `ExecutionTimeoutMs` | `1800000` | 单个 Case 从执行请求到收到停止事件的总超时 |
+| `ExecutionTimeoutMs` | `1800000` | 单个 Plan 从执行请求到收到终止事件的总超时 |
 | `ReportTimeoutMs` | `600000` | 单份报告下载超时 |
 | `ReportRenderTimeoutMs` | `30000` | 下载报告前等待 VCarEA 渲染 html/pdf/xlsx 的超时（1000–600000 ms）；超时告警后继续下载 |
 | `CleanupTimeoutMs` | `5000` | 单次清理接口应答超时 |
@@ -141,4 +143,4 @@ MQTT 业务订阅就绪，因此连接阶段会重复发送接入请求并等待
 - `MQTT_CONFIG`：旧版流程保留的 Connector MQTT 连接配置 JSON。
 - `VCAREA_REPORT:zip:<序号>`：每个成功下载的 VCarEA ZIP 报告（SHA-256 校验结果记录在执行摘要中）。
 - `VCAREA_REPORT:html|pdf|xlsx:<序号>`：任务选择旧版格式时，从 ZIP 中提取的对应文件（仅在 ZIP 内存在该格式时发布）。
-- `VCAREA_EXECUTION_RESULT`：包含工程、Case 状态、接口应答、报告事件、下载结果和采集错误的 JSON 摘要。
+- `VCAREA_EXECUTION_RESULT`：包含工程、Plan 状态、Plan 内 Case 清单、接口应答、报告事件、下载结果和采集错误的 JSON 摘要。

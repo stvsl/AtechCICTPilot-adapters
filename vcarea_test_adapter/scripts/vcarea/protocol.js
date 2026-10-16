@@ -19,6 +19,7 @@ const DEFAULT_RESPONSE_TIMEOUT_MS = 30000;
 const DEFAULT_EXECUTION_TIMEOUT_MS = 1800000;
 const DEFAULT_REPORT_TIMEOUT_MS = 600000;
 const DEFAULT_CLEANUP_TIMEOUT_MS = 5000;
+const DEFAULT_REPORT_EVENT_SETTLE_MS = 500;
 const ACCESS_RETRY_INTERVAL_MS = 1000;
 const PROJECT_CONFIGURATION_RETRY_INTERVAL_MS = 1000;
 const PROBE_REPORT_INTERVAL_MS = 3000;
@@ -95,12 +96,12 @@ export const TOPICS = Object.freeze({
     settingResponse: "KY/VCar/EA/SettingConfiguration/Response",
     environmentRequest: "KY/VCar/EA/Environment/Request",
     environmentResponse: "KY/VCar/EA/Environment/Response",
-    casesRequest: "KY/VCar/EA/Cases/Request",
-    casesResponse: "KY/VCar/EA/Cases/Response",
-    caseOperationRequest: "KY/VCar/EA/Case/Operation/Request",
-    caseOperationResponse: "KY/VCar/EA/Case/Operation/Response",
-    caseExecuteRequest: "KY/VCar/EA/Case/Execute/Request",
-    caseExecuteResponse: "KY/VCar/EA/Case/Execute/Response",
+    plansRequest: "KY/VCar/EA/Plans/Request",
+    plansResponse: "KY/VCar/EA/Plans/Response",
+    planOperationRequest: "KY/VCar/EA/Plan/Operation/Request",
+    planOperationResponse: "KY/VCar/EA/Plan/Operation/Response",
+    planExecuteRequest: "KY/VCar/EA/Plan/Execute/Request",
+    planExecuteResponse: "KY/VCar/EA/Plan/Execute/Response",
     reportDownloadRequest: "KY/VCar/EA/Report/Download/Request",
     reportDownloadResponse: "KY/VCar/EA/Report/Download/Response",
     reportPushRequest: "KY/VCar/EA/Report/Push/Request",
@@ -113,16 +114,16 @@ export const TOPICS = Object.freeze({
  * 测试报告事件主题。
  *
  * 实测 VCarEA 1.8.4.0826：执行事件由宿主从执行器 broker 转发到主 broker，
- * 主题统一带 `KY/` 前缀，且当前版本只转发停止类事件（`Run/Stop` 与
- * `Case/Stop`，后者附带 RunID 与失败计数）；文档里 `VCar/EA/TestReport/...`
- * （无前缀）的写法及 Start/Step 事件不会到达。订阅整个前缀既能覆盖已知
- * 事件，也能接住未来版本新增的转发类型。
+ * 主题统一带 `KY/` 前缀。Plan 执行以 `Plan/Stop` 或 `Run/Stop` 为终止
+ * 信号；`Case/Stop` 仅表示 Plan 内的子 Case 完成，不能结束当前 Plan。
+ * 文档里 `VCar/EA/TestReport/...`（无前缀）的写法与实测转发主题不一致。
+ * 订阅整个前缀既能覆盖已知事件，也能接住 Plan 内的 Case/Step 明细。
  */
 const REPORT_TOPIC_PREFIX = "KY/VCar/EA/TestReport/";
 export const REPORT_TOPIC_SUBSCRIPTION = `${REPORT_TOPIC_PREFIX}#`;
 export const REPORT_TOPICS = Object.freeze({
     runStop: `${REPORT_TOPIC_PREFIX}Run/Stop`,
-    caseStop: `${REPORT_TOPIC_PREFIX}Case/Stop`,
+    planStop: `${REPORT_TOPIC_PREFIX}Plan/Stop`,
 });
 
 const RESPONSE_TOPICS = Object.freeze([
@@ -131,9 +132,9 @@ const RESPONSE_TOPICS = Object.freeze([
     TOPICS.configurationsResponse,
     TOPICS.settingResponse,
     TOPICS.environmentResponse,
-    TOPICS.casesResponse,
-    TOPICS.caseOperationResponse,
-    TOPICS.caseExecuteResponse,
+    TOPICS.plansResponse,
+    TOPICS.planOperationResponse,
+    TOPICS.planExecuteResponse,
     TOPICS.reportDownloadResponse,
     TOPICS.reportPushResponse,
     TOPICS.executionPortResponse,
@@ -149,7 +150,7 @@ const STATUS_TEXT = Object.freeze({
     106: "缺少测试台配置",
     107: "mrtd 连接失败",
     108: "执行步骤无效",
-    109: "执行 Case 无效",
+    109: "执行 Plan 无效",
 });
 
 let connectionHandle = null;
@@ -718,10 +719,75 @@ export function waitForProjectConfigurations(timeoutMs, probeIntervalMs) {
         + (lastError === null ? "未执行配置探测" : lastError.message));
 }
 
+/** Plan 列表中出现至少一个有效计划即视为工程执行树就绪。 */
+function projectPlans(entries) {
+    return entries.filter((entry) =>
+        String(entry && entry.Path ? entry.Path : "")
+            .toLowerCase().endsWith(".plan"));
+}
+
+/**
+ * 轮询 Plan 列表，直到 VCarEA 工程树公开可执行的测试计划。
+ *
+ * 本地存在 `.plan` 只能证明文件已经解压，不能证明 VCarEA 已经加载并接受
+ * 该计划。因此执行集合只来自 Plans 接口，不在接口返回空列表时回退到磁盘。
+ */
+export function waitForProjectPlans(timeoutMs, probeIntervalMs) {
+    const overallTimeoutMs = Number(timeoutMs);
+    if (!Number.isInteger(overallTimeoutMs) || overallTimeoutMs < 1) {
+        throw new Error("VCarEA Plan 就绪超时必须是正整数");
+    }
+    const probeInterval = Math.max(1, Math.floor(Number(probeIntervalMs) || 0));
+    const probeResponseTimeoutMs = Math.min(
+        responseTimeout(), Math.max(2000, probeInterval * 2));
+    const startedAt = Date.now();
+    const deadline = startedAt + overallTimeoutMs;
+    let lastError = null;
+    let lastReportAt = startedAt;
+    while (Date.now() < deadline) {
+        task.checkCancelled();
+        try {
+            const response = request(
+                TOPICS.plansRequest,
+                TOPICS.plansResponse,
+                undefined,
+                Math.min(
+                    probeResponseTimeoutMs,
+                    Math.max(1, deadline - Date.now())));
+            const plans = projectPlans(Array.isArray(response.Data)
+                ? response.Data : []);
+            if (plans.length > 0) {
+                return {
+                    Plans: plans,
+                    WaitedMs: Date.now() - startedAt,
+                };
+            }
+            lastError = new Error("Plan 列表中尚未出现可执行的 .plan 文件");
+        } catch (error) {
+            lastError = error;
+        }
+        const now = Date.now();
+        if (now - lastReportAt >= PROBE_REPORT_INTERVAL_MS) {
+            lastReportAt = now;
+            task.info(
+                `VCarEA Plan 列表仍在初始化（已等待 `
+                + `${Math.round((now - startedAt) / 1000)} 秒）：`
+                + (lastError === null ? "未知原因" : lastError.message));
+        }
+        if (Date.now() < deadline) {
+            task.delay(Math.min(
+                probeInterval, Math.max(1, deadline - Date.now())));
+        }
+    }
+    throw new Error(
+        `等待 VCarEA Plan 列表就绪超时（${overallTimeoutMs} ms）：`
+        + (lastError === null ? "未执行 Plan 探测" : lastError.message));
+}
+
 /**
  * 查询执行 MQTT 端口（可选观察）。
  *
- * 实测 VCarEA 1.8.4.0826 对该请求完全不产生应答（包括 Case 执行期间），
+ * 实测 VCarEA 1.8.4.0826 对该请求完全不产生应答（包括 Plan 执行期间），
  * 因此只执行一次短超时请求：无应答或业务错误按 `{Port: null, Error}` 返回，
  * 不视为失败；连接级错误仍向上抛出，避免掩盖真实故障。
  */
@@ -883,6 +949,53 @@ export function reportEventsSince(index) {
         DroppedEventCount: Math.max(
             0, droppedReportEvents - requestedIndex),
     };
+}
+
+/**
+ * 等待当前 Plan 执行结束。
+ *
+ * Plan 内部的 Case/Stop 只表示一个子 Case 完成，不能结束 Plan。执行完成
+ * 仅接受 Plan/Stop 或 Run/Stop。先扫描缓冲区里已有的终止事件，再继续接收；
+ * 收到首个终止事件后保留 ReportEventSettleMs 收尾窗口吸纳迟到事件；超过
+ * timeoutMs 仍未收到终止事件才报错。
+ */
+export function waitForPlanStop(startIndex, timeoutMs) {
+    const settleMs = optionInteger(
+        "ReportEventSettleMs", DEFAULT_REPORT_EVENT_SETTLE_MS, 0, 60000);
+    const deadline = Date.now() + timeoutMs;
+    let stopObservedAt = 0;
+    let scanned = startIndex;
+    const scanBufferedEvents = () => {
+        const snapshot = reportEventsSince(scanned);
+        scanned += snapshot.DroppedEventCount + snapshot.Events.length;
+        for (const event of snapshot.Events) {
+            if (stopObservedAt === 0
+                    && (event.Topic === REPORT_TOPICS.planStop
+                        || event.Topic === REPORT_TOPICS.runStop)) {
+                stopObservedAt = Date.now();
+            }
+        }
+    };
+    scanBufferedEvents();
+    while (Date.now() < deadline) {
+        task.checkCancelled();
+        if (stopObservedAt > 0 && Date.now() - stopObservedAt >= settleMs) {
+            return;
+        }
+        const message = receiveMessage(Math.max(
+            1, Math.min(RECEIVE_POLL_INTERVAL_MS, deadline - Date.now())));
+        if (message === null || message === undefined) {
+            continue;
+        }
+        if (routeProtocolMessage(message)) {
+            scanBufferedEvents();
+        }
+    }
+    if (stopObservedAt === 0) {
+        throw new Error(
+            `等待 VCarEA Plan 执行完成超时（${timeoutMs} ms）：`
+            + "未收到 Plan/Stop 或 Run/Stop 报告事件");
+    }
 }
 
 export function disconnect() {
