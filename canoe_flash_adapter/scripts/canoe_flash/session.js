@@ -24,6 +24,23 @@ function normalizeCanoeVersion(value) {
     return version;
 }
 
+function configurationHeader(bytes) {
+    // CANoe 的版本字段为 ASCII；UTF-16 文件头按 BOM 解码，正文只读取前 4 KiB。
+    const littleEndian = bytes[0] === 0xff && bytes[1] === 0xfe;
+    const bigEndian = bytes[0] === 0xfe && bytes[1] === 0xff;
+    if (!littleEndian && !bigEndian) {
+        return new TextDecoder().decode(bytes);
+    }
+    let text = "";
+    for (let index = 2; index + 1 < bytes.length; index += 2) {
+        const code = littleEndian
+            ? bytes[index] | (bytes[index + 1] << 8)
+            : (bytes[index] << 8) | bytes[index + 1];
+        text += String.fromCharCode(code);
+    }
+    return text;
+}
+
 function release(object) {
     if (object === null || object === undefined) {
         return;
@@ -165,6 +182,57 @@ export class CanoeSession {
         this.measurementRunning = false;
         this.executable = "";
         this.launchedAt = 0;
+    }
+
+    validateProjectVersion(configurationUri) {
+        const details = {
+            configurationPath: configurationUri,
+            projectVersion: "unknown",
+            expectedVersion: this.version
+        };
+        const fail = (reason, message) => {
+            // 版本不匹配提示仅展示双方版本，路径保留在结构化诊断信息中。
+            const error = new Error(reason === "versionMismatch" ? message
+                : `${message} (configuration: ${configurationUri}; `
+                    + `project version: ${details.projectVersion}; CANOE_VERSION: ${this.version})`);
+            error.code = "INVALID_ARGUMENT";
+            error.details = {...details, reason};
+            throw error;
+        };
+        if (!configurationUri.toLowerCase().endsWith(".cfg")) {
+            fail("invalidConfiguration", "CANoe configuration must be a .cfg file");
+        }
+        let header;
+        try {
+            header = configurationHeader(fs.readBytes(configurationUri, 4096));
+        } catch (error) {
+            fail("unreadableHeader", `Unable to read CANoe configuration header: ${errorMessage(error)}`);
+        }
+        const lines = header.split("\n");
+        // 首个数字是配置格式号，第二个数字才是 CANoe 软件主版本。
+        const signature = /^;CANoe Version[ \t]+\|[0-9]+\|([1-9][0-9]*)\|[0-9]+\|/
+            .exec((lines[0] || "").trim());
+        if (!signature || Number(signature[1]) > 0xffffffff) {
+            fail("unknownVersion", "Unable to identify CANoe software version in .cfg header");
+        }
+        details.projectVersion = signature[1];
+        const secondLine = (lines[1] || "").trim();
+        if (secondLine.startsWith("Version:")) {
+            const softwareVersion = /^Version:[ \t]*([1-9][0-9]*)\.[0-9]+(?:[. \t]|$)/
+                .exec(secondLine);
+            if (!softwareVersion || softwareVersion[1] !== signature[1]) {
+                fail("conflictingVersions", "Conflicting CANoe version records in .cfg header");
+            }
+        }
+        // 能力配置指定实际运行版本，仅允许加载同版本或更低版本的工程。
+        if (Number(details.projectVersion) > Number(this.version)) {
+            fail("versionMismatch", "CANoe version mismatch. "
+                + `Project version is ${details.projectVersion}, `
+                + `but CANoe version is ${this.version}.`);
+        }
+        task.info(Number(details.projectVersion) === Number(this.version)
+            ? `CANoe versions match: project and CANOE_VERSION are ${this.version} (${configurationUri})`
+            : `CANoe versions are compatible: project ${details.projectVersion}, CANOE_VERSION ${this.version} (${configurationUri})`);
     }
 
     installedExecutable() {

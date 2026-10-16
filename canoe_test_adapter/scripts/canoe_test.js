@@ -1312,6 +1312,7 @@ export async function prepare(projectPackage) {
     if (!fs.exists(configurationUri)) {
         throw new Error(`CANoe configuration is missing: ${configurationPath}`);
     }
+    canoe.validateProjectVersion(configurationUri);
 
     for (const entry of descriptorScripts()) {
         const uri = `${projectRootUri}/${entry.path}`;

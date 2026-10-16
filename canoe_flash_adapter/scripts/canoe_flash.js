@@ -415,6 +415,7 @@ export async function prepare(projectPackage, softwarePackage) {
     if (!fs.exists(configurationUri)) {
         throw new Error(`CANoe configuration is missing: ${configurationPath}`);
     }
+    canoe.validateProjectVersion(configurationUri);
 
     const inputPath = requireSafeRelativePath(
         descriptorPath("InputDirectory", DEFAULT_INPUT_DIRECTORY), "InputDirectory");
