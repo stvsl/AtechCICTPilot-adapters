@@ -72,6 +72,8 @@ let useProjectTestSetup = false;
 let projectTestSetupReady = false;
 let selectedTestCases = [];
 let resolvedReportViewerExecutable = "";
+let activeTestTarget = null;
+let executionCompleted = false;
 
 function debug(message) {
     task.info(`[CANoe debug] ${message}`);
@@ -83,6 +85,19 @@ const canoe = new CanoeSession({
     debug
 });
 const wait = canoe.waiter;
+
+// py-canoe 的 TestConfiguration/TestModule 同样调用 Automation 的 Pause/Resume。
+task.setPauseHandlers(
+    () => {
+        if (activeTestTarget !== null) {
+            activeTestTarget.call("Pause");
+        }
+    },
+    () => {
+        if (activeTestTarget !== null) {
+            activeTestTarget.call("Resume");
+        }
+    });
 
 function requireSafeRelativePath(value, field) {
     if (typeof value !== "string" || value.length === 0
@@ -606,6 +621,7 @@ function recordCompletedResults(candidates) {
             continue;
         }
         results.push(candidate);
+        task.resetTimeout();
         task.info(`[CANoe result] ${results.length}/${expectedResultCount}: `
             + `${candidate.id} - ${candidate.verdict}`);
     }
@@ -913,6 +929,7 @@ async function generateSelectedReports() {
         recordError: addReportError
     });
     registerNativeReports(nativeReportUris);
+    publishSelectedReports();
 
     if (nativeReportUris.length === 0 && reportTypes.length > 0) {
         addReportError("CANoe did not generate a native test report");
@@ -933,8 +950,11 @@ async function generateSelectedReports() {
             "-e",
             reportTypes.includes(REPORT_TYPE_XML));
     }
+    publishSelectedReports();
     convertXmlReportsToHtml(xmlReportUris);
+    publishSelectedReports();
     await convertNativeReports(nativeReportUris, REPORT_TYPE_PDF, "-p");
+    publishSelectedReports();
 }
 
 function elementsFor(object) {
@@ -1293,6 +1313,8 @@ export async function prepare(projectPackage) {
     requestedIds = [];
     results = [];
     testStarted = false;
+    executionCompleted = false;
+    activeTestTarget = null;
     expectedResultCount = 0;
     selectedTestCases = [];
     useProjectTestSetup = false;
@@ -1425,7 +1447,6 @@ export async function execute() {
     debug(`execute: starting (mode=${testMode}, expectedResults=${expectedResultCount})`);
     const timeout = Number(projectDescriptor && projectDescriptor.TestTimeoutMs)
         || DEFAULT_TEST_TIMEOUT_MS;
-    const started = Date.now();
     if (selectedTestCases.length === 0) {
         throw new Error("No CANoe test cases have been configured");
     }
@@ -1434,10 +1455,12 @@ export async function execute() {
             throw new Error("No CANoe communication test modules have been configured");
         }
         for (const module of activeCommunicationModules) {
+            task.checkpoint();
             const expectedModuleResultCount = selectedCaseCount([module]);
             debug("execute: starting communication test module");
             configureModuleExecution(module);
             module.call("Start");
+            activeTestTarget = module;
             testStarted = true;
             await wait.until(() => {
                 const pending = objectRunning(module, true)
@@ -1446,11 +1469,13 @@ export async function execute() {
                 task.progress(Math.min(90, 20 + results.length * 5));
                 return !pending;
             }, {
-                timeoutMs: Math.max(0, timeout - (Date.now() - started)),
+                timeoutMs: timeout,
+                progress: () => results.length,
                 description: "CANoe communication test module to finish",
                 isReady: (value) => value === true
             });
             recordCompletedResults(collectVerdictsFrom([module]));
+            activeTestTarget = null;
         }
     } else {
         if (testConfiguration === null) {
@@ -1458,6 +1483,7 @@ export async function execute() {
         }
         debug("execute: calling TestConfiguration.Start");
         testConfiguration.call("Start");
+        activeTestTarget = testConfiguration;
         testStarted = true;
         await wait.until(() => {
             const pending = moduleRunning() || results.length < expectedResultCount;
@@ -1467,22 +1493,15 @@ export async function execute() {
             task.progress(progress);
             return !pending;
         }, {
-            timeoutMs: Math.max(0, timeout - (Date.now() - started)),
+            timeoutMs: timeout,
+            progress: () => results.length,
             description: "CANoe TestConfiguration to finish",
             isReady: (value) => value === true
         });
     }
+    activeTestTarget = null;
+    executionCompleted = true;
     recordCompletedResults(collectVerdicts());
-    try {
-        await generateSelectedReports();
-    } catch (error) {
-        if (task.isCancelled()) {
-            throw error;
-        }
-        throwIfAutomationDisconnected(error);
-        addReportError(errorMessage(error));
-        task.warning(`CANoe report generation failed: ${errorMessage(error)}`);
-    }
     debug(`execute: completed (results=${results.length})`);
     const passed = testPassed();
     if (!passed) {
@@ -1546,8 +1565,40 @@ function publishSelectedReports() {
     }
 }
 
+function publishExecutionSummary() {
+    const summaryUri = "artifact://canoe-test/execution-result.json";
+    fs.writeText(summaryUri, JSON.stringify({
+        TaskId: task.id(), Completed: executionCompleted,
+        ExpectedResultCount: expectedResultCount, Results: results,
+        ExecutionError: executionFailureMessage, ReportErrors: reportErrors
+    }, null, 2));
+    task.publish("CANOE_EXECUTION_RESULT", summaryUri,
+                 "CANoe execution result", "application/json");
+}
+
 export async function collectArtifacts() {
     debug("collectArtifacts: starting");
+    if (testStarted && !executionCompleted) {
+        executionFailureMessage = "CANoe execution was interrupted before all test cases completed";
+        try {
+            if (activeTestTarget !== null) {
+                activeTestTarget.call("Stop");
+                activeTestTarget = null;
+            }
+            recordCompletedResults(collectVerdicts());
+        } catch (error) {
+            addReportError(`Unable to finalize interrupted CANoe execution: ${errorMessage(error)}`);
+        }
+    }
+    // 先落盘摘要，即使报告生成自身再次超时也保留部分用例结果。
+    publishExecutionSummary();
+    if (testStarted) {
+        try {
+            await generateSelectedReports();
+        } catch (error) {
+            addReportError(`CANoe report generation failed: ${errorMessage(error)}`);
+        }
+    }
     publishSelectedReports();
     const paths = Array.isArray(projectDescriptor && projectDescriptor.Artifacts)
         ? projectDescriptor.Artifacts.slice() : [];
@@ -1573,6 +1624,7 @@ export async function collectArtifacts() {
         failures.push(executionFailureMessage);
     }
     failures.push(...reportErrors);
+    publishExecutionSummary();
     if (failures.length > 0) {
         task.progress(100);
         throw new Error(failures.join("; "));

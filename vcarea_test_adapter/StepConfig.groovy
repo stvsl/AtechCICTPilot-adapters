@@ -54,16 +54,16 @@ stages {
             runjs("scripts/vcarea_test.js", "execute")
         }
     }
-    stage("收集测试报告") {
-        // TODO: 接口文档未规定报告推送上限，暂按 10 分钟处理。
-        timeout(600000)
-        steps {
-            runjs("scripts/vcarea_test.js", "collectArtifacts")
-        }
-    }
 }
 post {
     always {
+        stage("收集测试报告") {
+            // TODO: 接口文档未规定报告推送上限，暂按 10 分钟处理。
+            timeout(600000)
+            steps {
+                runjs("scripts/vcarea_test.js", "collectArtifacts")
+            }
+        }
         runjs("scripts/vcarea_test.js", "cleanup")
     }
 }

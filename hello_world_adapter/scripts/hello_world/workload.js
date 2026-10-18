@@ -66,6 +66,7 @@ async function simulateTestCases(testCaseCount, testCaseDurationMs) {
         task.info(`正在执行${id}`);
         // 配置的单条执行时长代表该用例的模拟耗时。
         await task.delay(testCaseDurationMs);
+        task.resetTimeout();
 
         if (testCasePassed(index)) {
             ++passed;

@@ -66,6 +66,7 @@ let projectReady = false;
 let environmentStarted = false;
 let activePlanPath = "";
 let activePlanMayBeOpen = false;
+let activePlanExecuting = false;
 let testConfigurationPath = "";
 let testbenchConfigurationPath = "";
 let requestedPlans = [];
@@ -74,6 +75,11 @@ let reportTypes = [];
 let executionResults = [];
 let reportDownloads = [];
 let collectionErrors = [];
+let activeExecutionResult = null;
+let activeEventStart = 0;
+
+// EA 协议没有原地暂停；宿主仅在阶段边界和已结束的 Plan 之后调用检查点。
+task.setPauseHandlers(() => {}, () => {});
 /**
  * 工程文件清单与扩展名索引缓存。
  *
@@ -309,6 +315,7 @@ function resetExecutionState() {
     environmentStarted = false;
     activePlanPath = "";
     activePlanMayBeOpen = false;
+    activePlanExecuting = false;
     testConfigurationPath = "";
     testbenchConfigurationPath = "";
     requestedPlans = [];
@@ -317,6 +324,8 @@ function resetExecutionState() {
     executionResults = [];
     reportDownloads = [];
     collectionErrors = [];
+    activeExecutionResult = null;
+    activeEventStart = 0;
     projectFileCache.clear();
     projectEntryCache = null;
 }
@@ -593,14 +602,16 @@ function executionRequestData(planPath) {
 }
 
 function stopActivePlan(timeoutMs) {
-    if (activePlanPath === "" || !isConnected()) {
+    if (!activePlanExecuting || activePlanPath === "" || !isConnected()) {
         return;
     }
-    request(
+    const response = request(
         TOPICS.planExecuteRequest,
         TOPICS.planExecuteResponse,
         {OperationType: 1, PlanPath: activePlanPath},
         timeoutMs);
+    activePlanExecuting = false;
+    return response;
 }
 
 function closeActivePlan(timeoutMs) {
@@ -613,6 +624,7 @@ function closeActivePlan(timeoutMs) {
         {OperationType: 1, PlanPath: activePlanPath},
         timeoutMs);
     activePlanMayBeOpen = false;
+    activePlanExecuting = false;
     activePlanPath = "";
 }
 
@@ -624,6 +636,12 @@ function addCollectionError(message) {
 }
 
 function overallStatus() {
+    if (executionResults.length === 0) {
+        return "not_started";
+    }
+    if (executionResults.some((result) => result.Status === "interrupted")) {
+        return "interrupted";
+    }
     if (executionResults.some((result) => result.Status === "failed")) {
         return "failed";
     }
@@ -910,13 +928,18 @@ export function execute() {
         throw new Error("没有可执行的 VCarEA Plan");
     }
     for (let index = 0; index < selectedPlans.length; ++index) {
+        task.checkpoint();
         task.checkCancelled();
         const selected = selectedPlans[index];
         activePlanPath = selected.NativePath;
-        const eventStart = reportEventCount();
-        let containedCases = [];
-        let response = null;
-        let executionFailed = false;
+        activeEventStart = reportEventCount();
+        activeExecutionResult = {
+            Plan: selected.Path, ContainedCases: [], Status: "interrupted",
+            ReportPath: "", Response: null, ReportEvents: [],
+            DroppedReportEventCount: 0, Error: ""
+        };
+        // 先登记执行状态，任何请求失败或运行时中断都不能丢弃当前 Plan。
+        executionResults.push(activeExecutionResult);
         try {
             // 请求超时时无法判断 EA 是否已经打开 Plan，因此在发送前进入待清理状态。
             activePlanMayBeOpen = true;
@@ -924,56 +947,63 @@ export function execute() {
                 TOPICS.planOperationRequest,
                 TOPICS.planOperationResponse,
                 {OperationType: 0, PlanPath: activePlanPath});
-            containedCases = responseArray(openedPlan, "");
+            activeExecutionResult.ContainedCases = responseArray(openedPlan, "");
             task.info(
                 `执行 VCarEA Plan ${index + 1}/${selectedPlans.length}：`
-                + `${selected.Path}（包含 ${containedCases.length} 个 Case）`);
+                + `${selected.Path}（包含 ${activeExecutionResult.ContainedCases.length} 个 Case）`);
             // Plan/Execute 应答与执行结束事件共享单个 Plan 的执行超时预算。
             const planDeadline = Date.now() + executionTimeout();
-            response = request(
+            activePlanExecuting = true;
+            const response = request(
                 TOPICS.planExecuteRequest,
                 TOPICS.planExecuteResponse,
                 executionRequestData(activePlanPath),
                 Math.max(1, planDeadline - Date.now()));
+            activeExecutionResult.Response = response;
+            activeExecutionResult.ReportPath = String(
+                response && response.Data && response.Data.ReportPath || "").trim();
             // 子 Case 的停止事件不能结束 Plan；只等待 Plan/Stop 或 Run/Stop。
-            waitForPlanStop(eventStart, Math.max(1, planDeadline - Date.now()));
+            waitForPlanStop(activeEventStart, Math.max(1, planDeadline - Date.now()));
+            activePlanExecuting = false;
+            const snapshot = reportEventsSince(activeEventStart);
+            activeExecutionResult.ReportEvents = snapshot.Events;
+            activeExecutionResult.DroppedReportEventCount = snapshot.DroppedEventCount;
+            activeExecutionResult.Status = evaluatePlanStatus(snapshot.Events);
         } catch (error) {
-            executionFailed = true;
+            activeExecutionResult.Error = String(error.message || error);
             throw error;
-        } finally {
-            if (activePlanMayBeOpen && isConnected()) {
-                const timeoutMs = cleanupTimeout();
-                if (executionFailed) {
-                    cleanupCall(
-                        "停止执行失败的 VCarEA Plan",
-                        () => stopActivePlan(timeoutMs));
-                    cleanupCall(
-                        "关闭执行失败的 VCarEA Plan",
-                        () => closeActivePlan(timeoutMs));
-                } else {
-                    closeActivePlan(timeoutMs);
-                }
-            }
         }
-
-        const eventSnapshot = reportEventsSince(eventStart);
-        const reportPath = String(
-            response && response.Data && response.Data.ReportPath || "").trim();
-        executionResults.push({
-            Plan: selected.Path,
-            ContainedCases: containedCases,
-            Status: evaluatePlanStatus(eventSnapshot.Events),
-            ReportPath: reportPath,
-            Response: response,
-            ReportEvents: eventSnapshot.Events,
-            DroppedReportEventCount: eventSnapshot.DroppedEventCount,
-        });
+        closeActivePlan(cleanupTimeout());
+        activeExecutionResult = null;
+        task.resetTimeout();
         task.progress(55 + Math.round((index + 1) / selectedPlans.length * 35));
+        task.checkpoint();
     }
 }
 
 /** 阶段 8：下载文档规定的 ZIP 报告，发布结构化执行结果。 */
 export function collectArtifacts() {
+    // 报告停止、渲染或下载超时都不能阻止已有执行状态落盘。
+    publishExecutionSummary();
+    if (activeExecutionResult !== null) {
+        if (activeExecutionResult.Status === "interrupted"
+                && activeExecutionResult.Error === "") {
+            activeExecutionResult.Error = "Plan 执行在完成前被中断";
+        }
+        try {
+            const stopped = stopActivePlan(cleanupTimeout());
+            const path = String(stopped && stopped.Data && stopped.Data.ReportPath || "").trim();
+            if (path !== "") {
+                activeExecutionResult.ReportPath = path;
+            }
+        } catch (error) {
+            addCollectionError(`停止中断 Plan 失败：${error.message}`);
+        }
+        const snapshot = reportEventsSince(activeEventStart);
+        activeExecutionResult.ReportEvents = snapshot.Events;
+        activeExecutionResult.DroppedReportEventCount = snapshot.DroppedEventCount;
+        publishExecutionSummary();
+    }
     let reportIndex = 0;
     for (const result of executionResults) {
         if (result.ReportPath === "") {
@@ -992,6 +1022,7 @@ export function collectArtifacts() {
                 ReportPath: result.ReportPath,
                 ...downloaded,
             });
+            publishExecutionSummary();
         } catch (error) {
             addCollectionError(
                 `下载 Plan [${result.Plan}] 报告失败：${error.message}`);

@@ -57,6 +57,7 @@ export class Poller {
         isReady = (value) => Boolean(value),
         retryOnError = null,
         onPoll = null,
+        progress = null,
         onCancel = null,
         ignoreCancellation = false
     } = {}) {
@@ -65,7 +66,8 @@ export class Poller {
         }
         const timeout = duration(timeoutMs, 0, true);
         const interval = duration(intervalMs, this.intervalMs);
-        const started = Date.now();
+        let started = Date.now();
+        let previousProgress = typeof progress === "function" ? progress() : null;
         let lastError = "";
         const cancellationState = {handled: false};
         this.debug(`waiting for ${description}`);
@@ -77,6 +79,8 @@ export class Poller {
                 }
                 try {
                     task.checkCancelled();
+                    // 插件在安全点控制 CANoe；暂停时间不占轮询预算。
+                    started += task.checkpoint();
                 } catch (error) {
                     if (task.isCancelled()) {
                         await runCancellationCleanup(onCancel, cancellationState, error);
@@ -110,6 +114,13 @@ export class Poller {
             }
             if (typeof onPoll === "function") {
                 await onPoll(value, Date.now() - started);
+            }
+            if (typeof progress === "function") {
+                const currentProgress = progress();
+                if (currentProgress !== previousProgress) {
+                    started = Date.now();
+                    previousProgress = currentProgress;
+                }
             }
 
             const elapsed = Date.now() - started;
@@ -150,6 +161,7 @@ export class Poller {
             }
             try {
                 task.checkCancelled();
+                task.checkpoint();
             } catch (error) {
                 if (task.isCancelled()) {
                     await runCancellationCleanup(onCancel, cancellationState, error);

@@ -122,6 +122,7 @@ export const TOPICS = Object.freeze({
 const REPORT_TOPIC_PREFIX = "KY/VCar/EA/TestReport/";
 export const REPORT_TOPIC_SUBSCRIPTION = `${REPORT_TOPIC_PREFIX}#`;
 export const REPORT_TOPICS = Object.freeze({
+    caseStop: `${REPORT_TOPIC_PREFIX}Case/Stop`,
     runStop: `${REPORT_TOPIC_PREFIX}Run/Stop`,
     planStop: `${REPORT_TOPIC_PREFIX}Plan/Stop`,
 });
@@ -453,6 +454,11 @@ export function routeProtocolMessage(message) {
             parseJsonBytes(messagePayload(message), `报告事件 ${message.topic}`));
     } catch (error) {
         task.warning(`忽略无法解析的 VCarEA 报告事件：${error.message}`);
+        return true;
+    }
+    if (message.topic === REPORT_TOPICS.caseStop
+            || message.topic === REPORT_TOPICS.planStop) {
+        task.resetTimeout();
     }
     return true;
 }
@@ -528,7 +534,7 @@ export function waitForResponse(responseTopic,
                                 accept = null,
                                 resend = null) {
     requireConnected();
-    const deadline = Date.now() + timeoutMs;
+    let deadline = Date.now() + timeoutMs;
     const busyState = {count: 0, reportedAt: 0};
     let lastBusyMessage = "";
     while (Date.now() < deadline) {
@@ -540,6 +546,10 @@ export function waitForResponse(responseTopic,
             continue;
         }
         if (routeProtocolMessage(message)) {
+            if (responseTopic === TOPICS.planExecuteResponse
+                    && message.topic === REPORT_TOPICS.caseStop) {
+                deadline = Date.now() + timeoutMs;
+            }
             continue;
         }
         const busyMessage = busyRejectionMessage(message, responseTopic);
@@ -962,13 +972,16 @@ export function reportEventsSince(index) {
 export function waitForPlanStop(startIndex, timeoutMs) {
     const settleMs = optionInteger(
         "ReportEventSettleMs", DEFAULT_REPORT_EVENT_SETTLE_MS, 0, 60000);
-    const deadline = Date.now() + timeoutMs;
+    let deadline = Date.now() + timeoutMs;
     let stopObservedAt = 0;
     let scanned = startIndex;
     const scanBufferedEvents = () => {
         const snapshot = reportEventsSince(scanned);
         scanned += snapshot.DroppedEventCount + snapshot.Events.length;
         for (const event of snapshot.Events) {
+            if (event.Topic === REPORT_TOPICS.caseStop && stopObservedAt === 0) {
+                deadline = Date.now() + executionTimeout();
+            }
             if (stopObservedAt === 0
                     && (event.Topic === REPORT_TOPICS.planStop
                         || event.Topic === REPORT_TOPICS.runStop)) {

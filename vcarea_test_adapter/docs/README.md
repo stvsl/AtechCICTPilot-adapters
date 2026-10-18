@@ -33,6 +33,14 @@ Connector 接入使用 `scripts/vcarea/connector_sdk` 中由 DLL 工作台生成
 | 收集测试报告 | `collectArtifacts` | 先等待 VCarEA 渲染报告目录（数据库先落盘、html/pdf/xlsx 稍后生成），再按 `Report/Download -> Report/Push` 流程下载 ZIP（校验 SHA-256），按需从 ZIP 中提取 html/pdf/xlsx，并发布 JSON 执行摘要 |
 | 清理 | `cleanup` | 停止活动 Plan，关闭 Plan、实验环境和工程，断开 MQTT，并停止本次插件启动的 VCarEA |
 
+报告收集与清理均位于 `post.always`，按先收集、后关闭资源的顺序执行。
+失败、超时或取消后也会停止活动 Plan、保留已收到的报告目录与事件，并尝试下载
+部分报告；即使停止或下载再次失败，JSON 摘要也会先行落盘。原始失败不会被收尾错误覆盖。
+
+EA 协议只提供执行和停止，暂停请求会等待当前 Plan 完整结束；收到 `Case/Stop`
+不会停止包含它的 Plan。到达 Plan 边界后才确认暂停，继续后再执行下一项。
+每个 `Case/Stop` 和 Plan 完成会重置宿主节点预算；阶段总上限仍为 24 小时。
+
 ## 任务输入
 
 | 输入 | 说明 |
@@ -122,7 +130,7 @@ Connector 接入使用 `scripts/vcarea/connector_sdk` 中由 DLL 工作台生成
 | `AccessReadyTimeoutMs` | `120000` | 等待 VCarEA API 接入就绪的总超时 |
 | `AccessResponseTimeoutMs` | `3000` | 单次 API 接入握手的应答超时 |
 | `ResponseTimeoutMs` | `30000` | 普通 MQTT 应答超时 |
-| `ExecutionTimeoutMs` | `1800000` | 单个 Plan 从执行请求到收到终止事件的总超时 |
+| `ExecutionTimeoutMs` | `1800000` | 执行应答及等待终止事件的无用例完成超时；每个 `Case/Stop` 重新计时 |
 | `ReportTimeoutMs` | `600000` | 单份报告下载超时 |
 | `ReportRenderTimeoutMs` | `30000` | 下载报告前等待 VCarEA 渲染 html/pdf/xlsx 的超时（1000–600000 ms）；超时告警后继续下载 |
 | `CleanupTimeoutMs` | `5000` | 单次清理接口应答超时 |
