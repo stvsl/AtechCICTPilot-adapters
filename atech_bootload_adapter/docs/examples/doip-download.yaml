@@ -1,0 +1,11 @@
+mode: doip-download
+project: "AVATR_BDM_E15_V04"
+entity: "192.168.69.8"
+source: "0E80"
+target: "0002"
+multicast: "255.255.255.255"
+route-timeout: 2000
+force: false
+verbose: false
+timeout: 1800
+stall-timeout: 60

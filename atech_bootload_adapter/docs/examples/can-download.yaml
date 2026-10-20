@@ -1,0 +1,10 @@
+mode: can-download
+project: "FLZCU_Chery_E03_V02(RSA4096)"
+driver: "PEAK PCAN"
+channel: 0
+baud: 500000
+fd-baud: 2000000
+force: false
+verbose: false
+timeout: 1800
+stall-timeout: 60
