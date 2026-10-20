@@ -1,0 +1,22 @@
+{
+    "ManifestVersion": 2,
+    "PackageId": "ExcelModifyTest",
+    "PackageNameCN": "ExcelModifyTest Excel 修改测试",
+    "PackageNameEN": "ExcelModifyTest",
+    "PackageVersion": "1.0.0",
+    "DescriptionCN": "使用插件自带纯 JavaScript ZIP/XML 库，将随包 BootloaderTest.xlsx 的 FlashPath 表 CfgDriverFile 对应值改为执行时当前时间，并保留其它工作簿部件。",
+    "DescriptionEN": "Updates FlashPath.CfgDriverFile in the bundled BootloaderTest.xlsx to the execution time using plugin-owned JavaScript libraries, preserving all other workbook parts.",
+    "Author": "DOTRUST",
+    "NodeType": "Test",
+    "CapabilityNameCN": "ExcelModifyTest",
+    "CapabilityNameEN": "ExcelModifyTest",
+    "Runtime": {
+        "ApiVersion": "1.0",
+        "Language": "javascript"
+    },
+    "Permissions": {},
+    "CallingRuntime": [],
+    "SelfExaminationAbility": false,
+    "RequirementProperty": [],
+    "OnDeviceProperty": []
+}
