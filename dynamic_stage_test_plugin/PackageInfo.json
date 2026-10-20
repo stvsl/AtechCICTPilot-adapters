@@ -1,0 +1,44 @@
+{
+    "ManifestVersion": 2,
+    "PackageId": "dynamic_stage_test_plugin",
+    "PackageNameCN": "动态阶段测试插件",
+    "PackageNameEN": "Dynamic Stage Test Plugin",
+    "PackageVersion": "1.0.0",
+    "DescriptionCN": "保留静态引导与收尾，由执行中的阶段逐个创建后继阶段，验证动态流程、失败收尾和报告",
+    "DescriptionEN": "Tests stages creating their successors at runtime, with static bootstrap, verification, finalization, and reports",
+    "Author": "DOTRUST",
+    "NodeType": "Test",
+    "CapabilityNameCN": "动态阶段测试",
+    "CapabilityNameEN": "Dynamic Stage Test",
+    "Runtime": {
+        "ApiVersion": "1.0",
+        "Language": "javascript"
+    },
+    "Permissions": {},
+    "CallingRuntime": [],
+    "SelfExaminationAbility": false,
+    "RequirementProperty": [
+        {
+            "id": "STAGE_COUNT",
+            "nameCN": "动态阶段数量（1-100，留空为 3）",
+            "nameEN": "Dynamic stage count (1-100, default 3)",
+            "type": "integer",
+            "required": false
+        },
+        {
+            "id": "STAGE_DELAY_MS",
+            "nameCN": "每阶段等待毫秒数（0-10000，留空为 500）",
+            "nameEN": "Stage delay in milliseconds (0-10000, default 500)",
+            "type": "integer",
+            "required": false
+        },
+        {
+            "id": "FAIL_AT_STAGE",
+            "nameCN": "注入失败的阶段序号（0 表示禁用，留空为 0）",
+            "nameEN": "Stage number to fail (0 disables, default 0)",
+            "type": "integer",
+            "required": false
+        }
+    ],
+    "OnDeviceProperty": []
+}
