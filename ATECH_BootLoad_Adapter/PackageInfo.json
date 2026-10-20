@@ -1,0 +1,76 @@
+{
+    "ManifestVersion": 2,
+    "PackageId": "atech_bootload_adapter",
+    "PackageNameCN": "埃泰克BootLoader刷写工具适配器",
+    "PackageNameEN": "ATECH Bootloader Flash Tool Adapter",
+    "PackageVersion": "1.0.0",
+    "DescriptionCN": "埃泰克BootLoader刷写工具",
+    "DescriptionEN": "ATECH BootLoader Flash Tool",
+    "Author": "DOTRUST",
+    "NodeType": "Flash",
+    "CapabilityNameCN": "埃泰克BootLoader刷写",
+    "CapabilityNameEN": "ATECH Bootloader Flash",
+    "Runtime": {
+        "ApiVersion": "1.0",
+        "Language": "javascript"
+    },
+    "Permissions": {
+        "CLI": {
+            "Executables": [
+                {
+                    "Id": "bootload",
+                    "DeviceProperty": "CLI_PATH"
+                }
+            ],
+            "AllowTerminal": false
+        }
+    },
+    "CallingRuntime": [
+        "CLI"
+    ],
+    "SelfExaminationAbility": true,
+    "RequirementProperty": [
+        {
+            "id": "CONFIG_PACKAGE",
+            "nameCN": "配置参数包",
+            "nameEN": "ConfigParametersPackage",
+            "type": "file",
+            "required": true,
+            "fileExtension": ".zip"
+        },
+        {
+            "id": "APP_FILE",
+            "nameCN": "Application 固件（.hex）",
+            "nameEN": "Application firmware (.hex)",
+            "type": "file",
+            "required": true,
+            "fileExtension": ".hex"
+        },
+        {
+            "id": "FLASH_DRIVER",
+            "nameCN": "Flash Driver 固件（可选 .hex）",
+            "nameEN": "Flash Driver firmware (optional .hex)",
+            "type": "file",
+            "required": false,
+            "fileExtension": ".hex"
+        },
+        {
+            "id": "CALIBRATION",
+            "nameCN": "Calibration 固件（可选 .hex）",
+            "nameEN": "Calibration firmware (optional .hex)",
+            "type": "file",
+            "required": false,
+            "fileExtension": ".hex"
+        }
+    ],
+    "OnDeviceProperty": [
+        {
+            "id": "CLI_PATH",
+            "nameCN": "ATECH BootLoad CLI.exe",
+            "nameEN": "ATECH BootLoad CLI.exe",
+            "type": "file",
+            "required": true,
+            "fileExtension": ".exe"
+        }
+    ]
+}
