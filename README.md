@@ -10,7 +10,7 @@
 | [CANoe 测试](canoe_test_adapter/README.md) | `canoe_test_adapter` | VTEST / 通信测试、报告生成与发布 |
 | [CANoe Flash](canoe_flash_adapter/README.md) | `canoe_flash_adapter` | 调用工程中的刷写模块并验证软件版本 |
 | [ExcelModifyTest](excel_modify_test_adapter/README.md) | `ExcelModifyTest` | 验证随包 JavaScript 库定点修改 XLSX |
-| [动态阶段测试](dynamic_stage_test_plugin/README.md) | `dynamic_stage_test_plugin` | 验证阶段在运行时逐个创建后继阶段及失败收尾 |
+| [动态阶段测试](dynamic_stage_test_adapter/README.md) | `dynamic_stage_test_plugin` | 验证阶段在运行时逐个创建后继阶段及失败收尾 |
 | [Hello World](hello_world_adapter/README.md) | `hello_world_adapter` | 验证多阶段执行、日志、进度、产物与清理 |
 | [VCarEA 测试](vcarea_test_adapter/README.md) | `vcarea_test_adapter` | Connector 配置发现、MQTT Plan 执行与报告下载 |
 
