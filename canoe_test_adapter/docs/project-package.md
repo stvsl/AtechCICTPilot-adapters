@@ -50,7 +50,7 @@ VTEST 描述符示例：
 | `TestCaseIds` | 可选；外部用例输入为空时使用的 ID 数组 |
 | `Artifacts` | 可选；额外发布的相对文件路径，缺失文件告警 |
 
-各项等待与报告超时参数见[执行说明的工程字段表](execution.md#52-canoe-projectjson-常用字段)。
+各项等待与报告超时参数见[执行说明的工程字段表](execution.md)。
 
 ## 用例筛选
 
