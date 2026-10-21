@@ -10,6 +10,13 @@
     "NodeType": "Flash",
     "CapabilityNameCN": "埃泰克BootLoader刷写",
     "CapabilityNameEN": "ATECH Bootloader Flash",
+    "PlatformEngineeringInfo": [
+        {
+            "EngineeringPackageId": "ATECH_FLASH_PARAMETERS_PACKAGE",
+            "EngineeringPackageNameCN": "埃泰克UDS刷写参数包",
+            "EngineeringPackageNameEN": "ATECH UDS Flash Parameters"
+        }
+    ],
     "Runtime": {
         "ApiVersion": "1.0",
         "Language": "javascript"
@@ -36,7 +43,13 @@
             "nameEN": "ConfigParametersPackage",
             "type": "file",
             "required": true,
-            "fileExtension": ".zip"
+            "fileExtension": ".zip",
+            "platform": {
+                "type": "EngineeringPackage",
+                "tags": [
+                    "ATECH_FLASH_PARAMETERS_PACKAGE"
+                ]
+            }
         },
         {
             "id": "APP_FILE",
