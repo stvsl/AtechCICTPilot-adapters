@@ -14,17 +14,31 @@
 4. 打开离线执行，选择 ATECH BootLoad 能力，填写任务信息和输入，提交任务。
 5. 在任务详情的“刷写”阶段查看百分比、状态和日志；任务结束后查看发布产物。
 
-GUI 使用现有文件选择器；TUI 在能力页配置 EXE，在离线执行向导中填写相同文件路径。
+GUI 的 Application 和 Calibration 支持多选并追加文件，也可直接编辑路径列表；
+TUI 在能力页配置 EXE，在离线执行向导中每行填写一个文件路径，Enter 换行、Tab
+切换字段。文件按行顺序传入 CLI，核对页会列出全部路径。
 
 | 离线输入 | 必选 | 文件要求 |
 | --- | --- | --- |
 | 配置参数包 `CONFIG_PACKAGE` | 是 | 仅含一份 YAML 的 `.zip` |
-| Application `APP_FILE` | 是 | `.hex`、`.vbf`、`.s19`、`.mot`、`.sre`、`.mbf`、`.srec` 固件 |
+| Application `APP_FILE` | 是 | 至少一个固件文件，可多选；支持 `.hex`、`.vbf`、`.s19`、`.mot`、`.sre`、`.mbf`、`.srec` |
 | Flash Driver `FLASH_DRIVER` | 否 | `.hex`、`.vbf`、`.s19`、`.mot`、`.sre`、`.mbf`、`.srec` 固件；未选则不传参数 |
-| Calibration `CALIBRATION` | 否 | `.hex`、`.vbf`、`.s19`、`.mot`、`.sre`、`.mbf`、`.srec` 固件；未选则不传参数 |
+| Calibration `CALIBRATION` | 否 | 可多选固件文件，扩展名同 Application；未选则不传参数 |
 
 固件路径来自离线表单，任务执行时转换为本机路径，不能再写入输入 YAML。
 支持路径中的中文、空格和括号；参数按独立字符串传给进程，无须自行添加命令行引号。
+Application 和 Calibration 每项最多 4096 个文件，不能重复选择同一个文件；
+不同目录中的同名文件可以同时选择。任务创建时复制全部文件，源文件后续变化不会
+影响本次刷写，任务包导出、重新加载也会保留文件顺序。
+
+多个文件跟在同一个选项后，例如：
+
+```text
+--application "app0.vbf" "app1.vbf" --flash-driver "SBL.vbf" --calibration "DATA0.vbf" "DATA1.vbf"
+```
+
+`resolved.yaml` 中的 `application`、`calibration` 保存为路径列表；
+`flash-driver` 仍为单个路径。更新时须同时更新客户端并重新导入生成的插件包。
 
 ## YAML 配置
 
@@ -68,12 +82,16 @@ DoIP 地址必须使用字符串，例如 `target: "0002"`，避免 YAML 将其�
 
 CLI 没有 JSON 进度接口。插件按原始字节拼齐 stdout 的完整行，优先识别 UTF-8，
 否则按系统本地代码页解码（中文 Windows 通常为 CP936），再读取进度条的实际百分比。
-进度条方块被代码页替换为 `?` 时也能识别。重定向输出约每跨过 10% 输出一次，
+进度识别只依赖 50 格进度条的结构与末尾百分比，方块或中文标签损坏时也能识别。
+重定向输出约每跨过 10% 输出一次，
 因此界面以该节奏更新；首次进度输出前显示等待状态。多字节字符、跨块半行、CR/LF
-及退出后的末行均支持。stderr 和普通日志中的百分号不参与进度计算。
+及退出后的末行均支持；完整进度帧没有尾部换行时也立即上报。
+stderr 和普通日志中的百分号不参与进度计算，相同百分比不会重复上报。
 进度日志统一显示为 `刷写进度：12.0%`，原始方块进度条保留在输出归档中。
 
-此版插件使用客户端运行时的 `cli.decodeText()`，部署时须同时更新客户端与插件包。
+修复版插件为 **1.0.1**，使用客户端运行时的 `cli.decodeText()`。
+部署时更新客户端，并在适配器管理中导入、启用新插件包；仅替换客户端不会更新
+用户仓库中的已安装脚本。核对任务节点记录中的完整包版本与构建识别码。
 
 进程正常退出且退出码为 0 才成功；即使收到 100%，后续非零退出仍显示失败。
 退出码 1 表示参数、文件、设备连接或刷写失败；2 表示超时、停滞或停止；64 表示命令错误。
@@ -84,8 +102,12 @@ CLI 没有 JSON 进度接口。插件按原始字节拼齐 stdout 的完整行�
 
 - `resolved.yaml`：应用默认值并注入实际固件路径后的配置。
 - `projects-stdout.log`、`projects-stderr.log`、`projects-diagnostic.json`：项目查询记录。
-- `flash-stdout.log`、`flash-stderr.log`、`flash-diagnostic.json`：原始刷写输出和执行诊断。
-  `.log` 保留 CLI 的原始编码；查看中文 Windows 输出时，按工具实际编码打开。
+- `flash-stdout.log`、`flash-stderr.log`、`flash-diagnostic.json`：刷写输出和执行诊断。
+  所有 `.log` 统一使用 UTF-8，可直接查看中文。
+- `projects-stdout.raw`、`projects-stderr.raw`、`flash-stdout.raw`、`flash-stderr.raw`：
+  完整保留 CLI 的原始字节，用于核对工具输出编码。
+- `*-diagnostic.json` 同时记录实际加载的 `adapterVersion`、进度上报次数
+  `progressUpdates` 和最后一次百分比 `lastProgress`。
 - `error.json`：参数校验或执行失败的错误信息；取消由阶段状态和进程诊断记录。
 
 日志每秒保存一次，正常退出与清理阶段补齐尾部输出。外部工具及其子进程由宿主管理，

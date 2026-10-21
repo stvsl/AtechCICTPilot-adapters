@@ -23,13 +23,20 @@ export class OutputCollector {
                 this.pending.push(byte);
             }
         }
+        // 交互式进度帧以百分号结束，不能等下一次 CR 或进程退出才上报。
+        if (this.pending[this.pending.length - 1] === 37) {
+            this.flushLine(true);
+        }
     }
 
-    flushLine() {
+    flushLine(progressOnly = false) {
         if (this.pending.length === 0) {
             return;
         }
         const line = cli.decodeText(new Uint8Array(this.pending));
+        if (progressOnly && progressOf(line) === null) {
+            return;
+        }
         this.pending = [];
         if (line.trim() !== "") {
             this.onLine(line);
@@ -56,8 +63,9 @@ export class OutputCollector {
 }
 
 export function progressOf(line) {
-    // 本地代码页可能把进度条方块替换为问号；仍严格匹配标签和行尾百分比。
-    const match = /^\[[^\]\r\n]{1,256}\]\s*进度\s+(\d{1,3}(?:[.,]\d+)?)%\s*$/.exec(line.trim());
+    // CLI 固定使用 50 格进度条；乱码可使每格变成多个字符，标签也可能损坏。
+    // 只依赖进度条结构和行尾数值，排除普通日志、ASCII 文本和额外错误说明。
+    const match = /^\[[?\u0080-\uFFFF]{50,256}\][ \t]+[^\s\d%\[\]]{1,16}[ \t]+(\d{1,3}(?:[.,]\d+)?)%[ \t]*$/.exec(line.trim());
     if (!match) {
         return null;
     }

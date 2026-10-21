@@ -3,7 +3,7 @@
     "PackageId": "atech_bootload_adapter",
     "PackageNameCN": "埃泰克BootLoader刷写工具适配器",
     "PackageNameEN": "ATECH Bootloader Flash Tool Adapter",
-    "PackageVersion": "1.0.0",
+    "PackageVersion": "1.0.1",
     "DescriptionCN": "埃泰克BootLoader刷写工具",
     "DescriptionEN": "ATECH BootLoader Flash Tool",
     "Author": "DOTRUST",
@@ -42,7 +42,7 @@
             "id": "APP_FILE",
             "nameCN": "Application 固件",
             "nameEN": "Application firmware",
-            "type": "file",
+            "type": "file_multi",
             "required": true,
             "fileExtension": ".hex|.vbf|.s19|.mot|.sre|.mbf|.srec"
         },
@@ -58,7 +58,7 @@
             "id": "CALIBRATION",
             "nameCN": "Calibration 固件（可选）",
             "nameEN": "Calibration firmware (optional)",
-            "type": "file",
+            "type": "file_multi",
             "required": false,
             "fileExtension": ".hex|.vbf|.s19|.mot|.sre|.mbf|.srec"
         }
