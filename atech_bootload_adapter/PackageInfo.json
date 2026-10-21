@@ -40,27 +40,27 @@
         },
         {
             "id": "APP_FILE",
-            "nameCN": "Application 固件（.hex）",
-            "nameEN": "Application firmware (.hex)",
+            "nameCN": "Application 固件",
+            "nameEN": "Application firmware",
             "type": "file",
             "required": true,
-            "fileExtension": ".hex"
+            "fileExtension": ".hex|.vbf|.s19|.mot|.sre|.mbf|.srec"
         },
         {
             "id": "FLASH_DRIVER",
-            "nameCN": "Flash Driver 固件（可选 .hex）",
-            "nameEN": "Flash Driver firmware (optional .hex)",
+            "nameCN": "Flash Driver 固件（可选）",
+            "nameEN": "Flash Driver firmware (optional)",
             "type": "file",
             "required": false,
-            "fileExtension": ".hex"
+            "fileExtension": ".hex|.vbf|.s19|.mot|.sre|.mbf|.srec"
         },
         {
             "id": "CALIBRATION",
-            "nameCN": "Calibration 固件（可选 .hex）",
-            "nameEN": "Calibration firmware (optional .hex)",
+            "nameCN": "Calibration 固件（可选）",
+            "nameEN": "Calibration firmware (optional)",
             "type": "file",
             "required": false,
-            "fileExtension": ".hex"
+            "fileExtension": ".hex|.vbf|.s19|.mot|.sre|.mbf|.srec"
         }
     ],
     "OnDeviceProperty": [

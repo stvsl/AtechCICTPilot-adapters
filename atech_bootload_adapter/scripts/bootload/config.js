@@ -120,9 +120,9 @@ export function prepareConfiguration() {
         if ((uri === "" || uri === null || uri === undefined) && input !== "APP_FILE") {
             continue;
         }
-        if (typeof uri !== "string" || !/\.hex$/i.test(uri)
+        if (typeof uri !== "string" || !/\.(?:hex|vbf|s19|mot|sre|mbf|srec)$/i.test(uri)
                 || fs.stat(uri).type !== "file") {
-            throw new Error(`${input} 必须是 .hex 固件文件`);
+            throw new Error(`${input} 必须是 .hex、.vbf、.s19、.mot、.sre、.mbf 或 .srec 固件文件`);
         }
         config[option] = fs.nativePath(uri);
     }

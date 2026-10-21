@@ -26,7 +26,9 @@ export async function executeCommand(executable, arguments_, id, timeoutMs,
             lastProgress = progress;
             task.progress(progress);
         }
-        task.info(line.substring(0, 4096));
+        // 原始进度条可能已被外部工具替换成问号；界面只显示清晰的实际百分比。
+        task.info(progress === null ? line.substring(0, 4096)
+            : `刷写进度：${progress.toFixed(1)}%`);
     });
     const stderr = new OutputCollector((line) => task.warning(line.substring(0, 4096)));
     const collect = () => {
