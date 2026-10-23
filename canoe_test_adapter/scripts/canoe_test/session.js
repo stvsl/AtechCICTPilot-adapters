@@ -7,12 +7,15 @@ import {Poller, errorMessage} from "./poller.js";
 
 const CANOE_PROG_ID = "CANoe.Application";
 const CANOE_EXECUTABLE_ID = "CANOE_EXECUTABLE";
+const CANOE_COM_REGISTRAR_ID = "CANOE_COM_REGISTRAR";
 const SUPPORTED_CANOE_VERSIONS = ["15", "16", "17", "18", "19", "20"];
 const DEFAULT_TIMEOUT_MS = 120000;
+const COM_REGISTRATION_TIMEOUT_MS = 60000;
 const CANOE_CLASS_FACTORY_GRACE_MS = 5000;
 const CANOE_NOT_READY_CODE = "CANOE_NOT_READY";
 const CANOE_INSTANCE_MISMATCH_CODE = "CANOE_INSTANCE_MISMATCH";
 const CANOE_VERSION_MISMATCH_CODE = "CANOE_VERSION_MISMATCH";
+const CANOE_COM_REGISTRATION_FAILED_CODE = "CANOE_COM_REGISTRATION_FAILED";
 
 function normalizeCanoeVersion(value) {
     const version = String(value === undefined || value === null ? "" : value).trim();
@@ -151,6 +154,87 @@ function parentNativePath(path) {
     return separator < 0 ? "" : normalized.substring(0, separator);
 }
 
+function registeredCanoeExecutable(comApi, allowMissing) {
+    try {
+        return String(comApi.registeredLocalServerExecutable(CANOE_PROG_ID)).trim();
+    } catch (error) {
+        const code = hresult(error);
+        const missing = (error && error.code === "NOT_FOUND")
+            || code === "0x80040154" || code === "0x800401f3";
+        if (allowMissing && missing) {
+            return "";
+        }
+        const wrapped = contextualError(
+            "Unable to inspect the CANoe Automation COM registration", error);
+        wrapped.canoeFatal = true;
+        throw wrapped;
+    }
+}
+
+export function ensureCanoeComRegistration(executable, {
+    comApi = com,
+    cliApi = cli,
+    timeoutMs = COM_REGISTRATION_TIMEOUT_MS
+} = {}) {
+    const expectedExecutable = String(executable || "").trim();
+    if (normalizeNativePath(expectedExecutable) === "") {
+        throw new Error("CANoe executable is required for COM registration");
+    }
+    const before = registeredCanoeExecutable(comApi, true);
+    if (normalizeNativePath(before) === normalizeNativePath(expectedExecutable)) {
+        task.info(`CANoe Automation COM registration already matches ${expectedExecutable}`);
+        return {changed: false, before, after: before};
+    }
+
+    let registrar;
+    try {
+        registrar = cliApi.resolveExecutable(CANOE_COM_REGISTRAR_ID);
+    } catch (error) {
+        const wrapped = contextualError(
+            "Unable to locate the configured CANoe COM registrar", error);
+        wrapped.canoeFatal = true;
+        throw wrapped;
+    }
+    task.info("Switching CANoe Automation COM registration to the configured "
+        + "version; approve the Windows administrator prompt");
+    let result;
+    try {
+        result = cliApi.runElevated({
+            executable: registrar,
+            arguments: [],
+            workingDirectoryUri: "executable://",
+            timeoutMs
+        });
+    } catch (error) {
+        const wrapped = contextualError(
+            "Unable to switch the CANoe Automation COM registration", error);
+        wrapped.canoeFatal = true;
+        throw wrapped;
+    }
+    if (!result || result.crashed || Number(result.exitCode) !== 0) {
+        const output = processOutput(result);
+        const suffix = output === "" ? "" : `: ${output}`;
+        const error = new Error(
+            `CANoe COM registrar failed with exit code ${result && result.exitCode}${suffix}`);
+        error.code = CANOE_COM_REGISTRATION_FAILED_CODE;
+        error.canoeFatal = true;
+        throw error;
+    }
+
+    const after = registeredCanoeExecutable(comApi, false);
+    if (normalizeNativePath(after) !== normalizeNativePath(expectedExecutable)) {
+        const error = new Error(
+            "CANoe Automation COM registration still points to the wrong executable "
+            + `after registration: expected="${expectedExecutable}", actual="${after || "unknown"}"`);
+        error.code = CANOE_COM_REGISTRATION_FAILED_CODE;
+        error.details = {expectedExecutable, registeredExecutable: after};
+        error.canoeFatal = true;
+        throw error;
+    }
+    task.info(`CANoe Automation COM registration now points to ${after}`);
+    return {changed: true, before, after};
+}
+
 function versionText(version) {
     if (version === null || version === undefined) {
         return "";
@@ -176,6 +260,7 @@ export class CanoeSession {
         this.application = null;
         this.measurement = null;
         this.configuration = null;
+        this.configurationUri = "";
         this.process = null;
         this.ownsProcess = false;
         this.attached = false;
@@ -197,6 +282,7 @@ export class CanoeSession {
                     + `project version: ${details.projectVersion}; CANOE_VERSION: ${this.version})`);
             error.code = "INVALID_ARGUMENT";
             error.details = {...details, reason};
+            error.canoeFatal = true;
             throw error;
         };
         if (!configurationUri.toLowerCase().endsWith(".cfg")) {
@@ -271,7 +357,7 @@ export class CanoeSession {
         });
     }
 
-    async launch({attachExisting = false, clearExisting = false, executable = "",
+    async launch({attachExisting = false, executable = "",
         clearTimeoutMs = DEFAULT_TIMEOUT_MS} = {}) {
         this.attached = Boolean(attachExisting);
         if (this.attached) {
@@ -287,9 +373,8 @@ export class CanoeSession {
         if (executablePath === "") {
             throw new Error("CANoe executable is required when starting a new instance");
         }
-        if (clearExisting) {
-            await this.clearExisting(clearTimeoutMs);
-        }
+        await this.clearExisting(clearTimeoutMs);
+        ensureCanoeComRegistration(executablePath);
 
         try {
             this.debug(`launch: starting configured CANoe executable: ${executablePath}`);
@@ -554,7 +639,9 @@ export class CanoeSession {
 
     refreshMeasurement() {
         if (this.application === null || this.application === undefined) {
-            throw new Error("CANoe Automation is not connected");
+            const error = new Error("CANoe Automation is not connected");
+            error.canoeFatal = true;
+            throw error;
         }
         let candidate = null;
         try {
@@ -737,18 +824,27 @@ export class CanoeSession {
         measurementStopTimeoutMs = DEFAULT_TIMEOUT_MS
     } = {}) {
         if (this.application === null || this.application === undefined) {
-            throw new Error("CANoe Automation is not connected");
+            const error = new Error("CANoe Automation is not connected");
+            error.canoeFatal = true;
+            throw error;
         }
         this.ensureOwnedProcessRunning();
+        const requestedUri = String(configurationUri);
+        const currentUri = String(this.configurationUri || "");
+        if (this.configuration !== null && this.configuration !== undefined
+                && currentUri.toLowerCase() !== requestedUri.toLowerCase()) {
+            await this.closeConfiguration({timeoutMs: measurementStopTimeoutMs});
+        }
         if (this.configuration === null || this.configuration === undefined) {
-            await this.stopMeasurementBeforeOpening(measurementStopTimeoutMs);
-            release(this.measurement);
-            this.measurement = null;
             try {
+                await this.stopMeasurementBeforeOpening(measurementStopTimeoutMs);
+                release(this.measurement);
+                this.measurement = null;
                 this.debug(`openConfiguration: calling Application.Open (${configurationUri})`);
                 const result = this.application.call(
                     "Open", fs.nativePath(configurationUri), true, false);
                 this.checkOpenResult(result);
+                this.configurationUri = requestedUri;
             } catch (error) {
                 if (isTransientOpenFailure(error)) {
                     const disconnected = contextualError(
@@ -757,10 +853,20 @@ export class CanoeSession {
                     disconnected.canoeFatal = true;
                     throw disconnected;
                 }
+                if (error && typeof error === "object") {
+                    error.canoeFatal = true;
+                }
                 throw error;
             }
         }
-        await this.waitForConfiguration(configurationTimeoutMs);
+        try {
+            await this.waitForConfiguration(configurationTimeoutMs);
+        } catch (error) {
+            if (error && typeof error === "object") {
+                error.canoeFatal = true;
+            }
+            throw error;
+        }
         if (typeof setupReady === "function") {
             await this.waiter.until(() => {
                 this.ensureOwnedProcessRunning();
@@ -773,6 +879,27 @@ export class CanoeSession {
             });
         }
         return this.configuration;
+    }
+
+    async closeConfiguration({timeoutMs = DEFAULT_TIMEOUT_MS} = {}) {
+        let closeError = null;
+        try {
+            if (this.application !== null && this.application !== undefined) {
+                await this.stopMeasurementBeforeOpening(timeoutMs);
+            }
+        } catch (error) {
+            closeError = error;
+        } finally {
+            release(this.configuration);
+            release(this.measurement);
+            this.configuration = null;
+            this.measurement = null;
+            this.configurationUri = "";
+            this.measurementRunning = false;
+        }
+        if (closeError !== null) {
+            throw closeError;
+        }
     }
 
     async ensureMeasurementStarted({readyTimeoutMs = DEFAULT_TIMEOUT_MS,
@@ -814,6 +941,7 @@ export class CanoeSession {
             this.attached = false;
             this.measurementRunning = false;
             this.executable = "";
+            this.configurationUri = "";
             this.launchedAt = 0;
         }
     }
@@ -844,6 +972,7 @@ export class CanoeSession {
         this.configuration = null;
         this.measurement = null;
         this.application = null;
+        this.configurationUri = "";
     }
 }
 

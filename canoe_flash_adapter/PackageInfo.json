@@ -38,6 +38,16 @@
                         "RelativePath": "Exec64/CANoe64.exe",
                         "PathDeviceProperty": "CANOE_INSTALL_DIR"
                     }
+                },
+                {
+                    "Id": "CANOE_COM_REGISTRAR",
+                    "AllowElevation": true,
+                    "WindowsInstalledProduct": {
+                        "DisplayNameTemplate": "Vector CANoe {version}",
+                        "VersionDeviceProperty": "CANOE_VERSION",
+                        "RelativePath": "Exec64/RegisterComponents.exe",
+                        "PathDeviceProperty": "CANOE_INSTALL_DIR"
+                    }
                 }
             ],
             "AllowTerminal": false

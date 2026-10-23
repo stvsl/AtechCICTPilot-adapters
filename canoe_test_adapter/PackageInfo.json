@@ -4,8 +4,8 @@
     "PackageNameCN": "CANoe 测试适配器",
     "PackageNameEN": "CANoe Test Adapter",
     "PackageVersion": "1.0.0",
-    "DescriptionCN": "通过 CANoe Test Configuration 执行 VTESTStudio 测试单元",
-    "DescriptionEN": "Execute VTESTStudio test units through a CANoe Test Configuration",
+    "DescriptionCN": "按压缩包工程清单顺序执行 CANoe 测试并逐工程发布报告",
+    "DescriptionEN": "Execute CANoe projects in archive order and publish each project report",
     "Author": "DOTRUST",
     "NodeType": "Test",
     "CapabilityNameCN": "CANoe 测试",
@@ -20,6 +20,11 @@
             "EngineeringPackageId": "CANOE_TEST_PACKAGE_TEST_UNIT",
             "EngineeringPackageNameCN": "CANoE Test Unit 工程",
             "EngineeringPackageNameEN": "CANoE Test Unit Package"
+        },
+        {
+            "EngineeringPackageId": "CANOE_TEST_CASES_JSON",
+            "EngineeringPackageNameCN": "CANoe 测试用例 JSON",
+            "EngineeringPackageNameEN": "CANoe Test Case JSON"
         }
     ],
     "Runtime": {
@@ -41,6 +46,16 @@
                         "DisplayNameTemplate": "Vector CANoe {version}",
                         "VersionDeviceProperty": "CANOE_VERSION",
                         "RelativePath": "Exec64/CANoe64.exe",
+                        "PathDeviceProperty": "CANOE_INSTALL_DIR"
+                    }
+                },
+                {
+                    "Id": "CANOE_COM_REGISTRAR",
+                    "AllowElevation": true,
+                    "WindowsInstalledProduct": {
+                        "DisplayNameTemplate": "Vector CANoe {version}",
+                        "VersionDeviceProperty": "CANOE_VERSION",
+                        "RelativePath": "Exec64/RegisterComponents.exe",
                         "PathDeviceProperty": "CANOE_INSTALL_DIR"
                     }
                 },
@@ -89,15 +104,17 @@
             }
         },
         {
-            "id": "TEST_CASE_IDS",
-            "nameCN": "测试用例",
-            "nameEN": "Test Case",
-            "type": "text_file",
-            "fileExtension": ".json|.txt",
+            "id": "TEST_CASES",
+            "nameCN": "测试用例名称配置 JSON",
+            "nameEN": "Test Case Name Configuration JSON",
+            "type": "file",
+            "fileExtension": ".json",
             "required": false,
             "platform": {
-                "type": "CaseSelection",
-                "tags": []
+                "type": "EngineeringPackage",
+                "tags": [
+                    "CANOE_TEST_CASES_JSON"
+                ]
             }
         },
         {

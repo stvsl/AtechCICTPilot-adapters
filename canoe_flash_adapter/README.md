@@ -8,6 +8,11 @@
 需要 Windows、CANoe 及包含刷写测试模块的工程。当前支持主版本
 **15、16、17、18、19、20**。脚本使用 JavaScript、COM 和 CLI 运行时。
 
+启动新实例时，适配器会先检查 `CANoe.Application` 的 `LocalServer32`。若当前 COM
+注册指向其他版本，将通过目标安装目录的 `Exec64/RegisterComponents.exe` 请求 UAC，
+切换并复核注册后才启动 CANoe。取消 UAC 或切换失败会立即终止；附加已有实例不会修改
+注册，但仍会校验实例版本。
+
 在仓库根目录构建：
 
 ```sh

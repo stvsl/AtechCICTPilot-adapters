@@ -1,5 +1,5 @@
 stages {
-    stage("准备 CANoe 测试工程") {
+    stage("准备 CANoe 工程列表") {
         timeout(60000)
         steps {
             runjs("scripts/canoe_test.js", "prepare", env.CANOE_PROJECT)
@@ -17,28 +17,22 @@ stages {
             runjs("scripts/canoe_test.js", "connect")
         }
     }
-    stage("装载测试单元") {
-        timeout(120000)
+    stage("创建 CANoe 工程执行阶段") {
+        timeout(60000)
         steps {
-            runjs("scripts/canoe_test.js", "configure")
+            runjs("scripts/canoe_test.js", "beginExecution")
         }
     }
-    stage("打开配置并启动测量") {
+    stage("汇总 CANoe 执行结果") {
         timeout(120000)
         steps {
-            runjs("scripts/canoe_test.js", "startMeasurement")
-        }
-    }
-    stage("执行测试用例") {
-        timeout(86400000)
-        steps {
-            runjs("scripts/canoe_test.js", "execute")
+            runjs("scripts/canoe_test.js", "summarizeExecution")
         }
     }
 }
 post {
     always {
-        stage("收集测试报告") {
+        stage("补收 CANoe 测试报告") {
             timeout(600000)
             steps {
                 runjs("scripts/canoe_test.js", "collectArtifacts")

@@ -82,21 +82,21 @@ function canoeStartMode() {
         value = task.device("NEW_CANOE_WHEN_START");
     } catch (_) {
         const attachExisting = Boolean(task.option("AttachExisting", false));
-        return {attachExisting, clearExisting: !attachExisting};
+        return {attachExisting};
     }
     if (value === undefined || value === null || String(value).trim() === "") {
         const attachExisting = Boolean(task.option("AttachExisting", false));
-        return {attachExisting, clearExisting: !attachExisting};
+        return {attachExisting};
     }
     if (typeof value === "boolean") {
-        return { attachExisting: !value, clearExisting: value };
+        return {attachExisting: !value};
     }
     const normalized = String(value).trim().toLowerCase();
     if (normalized === "true") {
-        return { attachExisting: false, clearExisting: true };
+        return {attachExisting: false};
     }
     if (normalized === "false") {
-        return { attachExisting: true, clearExisting: false };
+        return {attachExisting: true};
     }
     throw new Error("NEW_CANOE_WHEN_START must be true or false");
 }
@@ -462,15 +462,13 @@ export async function launch() {
     if (startMode.attachExisting) {
         task.info("Attaching to an existing CANoe process");
         await canoe.launch({
-            attachExisting: true,
-            clearExisting: false
+            attachExisting: true
         });
         return;
     }
     const executable = canoe.installedExecutable();
     await canoe.launch({
         attachExisting: false,
-        clearExisting: startMode.clearExisting,
         executable,
         clearTimeoutMs: CANOE_AUTOMATION_READY_TIMEOUT_MS,
     });

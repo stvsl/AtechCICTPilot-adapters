@@ -16,6 +16,18 @@ GUI 与 TUI 使用同一组清单属性。实例选择的节点选项与默认�
 [scripts/canoe_flash.js](../scripts/canoe_flash.js) 的 `canoeStartMode()` 为准；
 清理只关闭本次拥有的进程，显式设置 `QuitAttachedInstance` 时也会退出附加实例。
 
+### 启动与 COM 注册
+
+新建实例模式先关闭当前 Automation 实例，再比较 `CANoe.Application` 的
+`LocalServer32` 与 `CANOE_VERSION` 对应的 `Exec64/CANoe64.exe`。注册缺失或路径不
+一致时，适配器通过 UAC 运行同一安装中的 `Exec64/RegisterComponents.exe`；该工具
+不带参数时注册其所属 CANoe 安装。只有退出码为 0，且重新读取的注册路径与目标完全
+一致，才以 `-embedding` 启动 CANoe 并连接 Automation。
+
+注册已匹配时不会出现 UAC。用户取消、注册工具失败/超时/非零退出，或注册后仍指向
+错误版本，都会立即终止，不再等待 Automation 连接。成功切换后不会在任务结束时恢复
+旧注册。附加模式不关闭实例、不切换注册，但连接后仍核对实际主版本。
+
 ## 工程描述符
 
 描述符必须位于 ZIP 根目录。示例：
@@ -51,7 +63,7 @@ GUI 与 TUI 使用同一组清单属性。实例选择的节点选项与默认�
 | 阶段导出 | 行为 |
 | --- | --- |
 | `prepare` | 解压、校验契约与配置版本、复制固件并修改系统变量 |
-| `launch` / `connect` | 选择进程、连接 Automation 并核对实例主版本 |
+| `launch` / `connect` | 附加实例，或切换 COM 注册后启动目标进程；连接并核对实例主版本 |
 | `validateContract` | 打开配置、定位并启用刷写模块、注册固件 UserFile |
 | `startMeasurement` | 确认工程就绪并启动 Measurement |
 | `flash` | 运行模块、轮询状态和进度、校验报告版本与 Verdict |
@@ -76,4 +88,5 @@ GUI 与 TUI 使用同一组清单属性。实例选择的节点选项与默认�
 ctest --preset=dev-fast -R 'AtechCICTPilot_(plugin_compiler|canoe_project_version|runtime_interface)'
 ```
 
-实际 CANoe / ECU 刷写、报告内容和 GUI 操作须在具备工程、授权和硬件的工位验证。
+实际 CANoe / ECU 刷写、COM 注册切换、UAC 交互、报告内容和 GUI 操作须在具备工程、
+授权和硬件的工位验证。

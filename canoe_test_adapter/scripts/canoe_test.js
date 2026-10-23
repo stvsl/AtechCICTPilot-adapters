@@ -11,16 +11,19 @@ import {
 import {
     cliResultText,
     isNativeReportUri,
-    nativeVtestReportArtifactPath,
     ReportFileTracker
 } from "./canoe_test/report_files.js";
 import {
     CanoeSession,
     isAutomationDisconnectFailure
 } from "./canoe_test/session.js";
+import {
+    parseTestCaseConfiguration,
+    selectCompatibleConfigurations,
+    sortConfigurationPaths,
+    validateConfigurationPaths
+} from "./canoe_test/project_plan.js";
 
-const CONTRACT_VERSION = "1.0";
-const DEFAULT_TEST_CONFIGURATION = "CICT Test Configuration";
 const DEFAULT_TEST_TIMEOUT_MS = 1800000;
 const CANOE_AUTOMATION_READY_TIMEOUT_MS = 120000;
 const CANOE_MEASUREMENT_STOP_TIMEOUT_MS = 120000;
@@ -49,17 +52,19 @@ const SUPPORTED_REPORT_TYPES = [
 let testConfiguration = null;
 let testConfigurationReport = null;
 let testUnits = null;
-let projectDescriptor = null;
 let projectRootUri = "";
 let configurationUri = "";
-let scriptUris = [];
-let requestedIds = [];
+let configurationPlans = [];
+let activeProject = null;
+let projectOutcomes = [];
+let summaryPublished = false;
+let currentReportPrefix = "";
+let publicationTypeCounts = {};
+let requestedTestCaseNames = [];
 let results = [];
 let testMode = "";
 let communicationModules = [];
 let activeCommunicationModules = [];
-let communicationScriptUris = [];
-let communicationModuleNames = [];
 let reportTypes = [];
 let generatedReports = [];
 let executionFailureMessage = "";
@@ -68,7 +73,6 @@ let reportFileTracker = new ReportFileTracker();
 let publishedArtifactUris = [];
 let testStarted = false;
 let expectedResultCount = 0;
-let useProjectTestSetup = false;
 let projectTestSetupReady = false;
 let selectedTestCases = [];
 let resolvedReportViewerExecutable = "";
@@ -99,16 +103,6 @@ task.setPauseHandlers(
         }
     });
 
-function requireSafeRelativePath(value, field) {
-    if (typeof value !== "string" || value.length === 0
-            || value.includes("\\") || value.startsWith("/")
-            || value.includes(":")
-            || value.split("/").some((part) => part === "" || part === "." || part === "..")) {
-        throw new Error(`${field} must be a safe relative path`);
-    }
-    return value;
-}
-
 function baseName(uri) {
     const parts = String(uri).split("/");
     const name = parts[parts.length - 1];
@@ -137,21 +131,21 @@ function canoeStartMode() {
         value = task.device("NEW_CANOE_WHEN_START");
     } catch (_) {
         const attachExisting = Boolean(task.option("AttachExisting", false));
-        return {attachExisting, clearExisting: !attachExisting};
+        return {attachExisting};
     }
     if (value === undefined || value === null || String(value).trim() === "") {
         const attachExisting = Boolean(task.option("AttachExisting", false));
-        return {attachExisting, clearExisting: !attachExisting};
+        return {attachExisting};
     }
     if (typeof value === "boolean") {
-        return { attachExisting: !value, clearExisting: value };
+        return {attachExisting: !value};
     }
     const normalized = String(value).trim().toLowerCase();
     if (normalized === "true") {
-        return { attachExisting: false, clearExisting: true };
+        return {attachExisting: false};
     }
     if (normalized === "false") {
-        return { attachExisting: true, clearExisting: false };
+        return {attachExisting: true};
     }
     throw new Error("NEW_CANOE_WHEN_START must be true or false");
 }
@@ -186,63 +180,88 @@ function relativePath(rootUri, uri) {
     return String(uri).substring(prefix.length);
 }
 
-function findProjectDescriptor(rootUri) {
-    const directDescriptor = `${rootUri}/canoe-project.json`;
-    if (fs.exists(directDescriptor)) {
-        return directDescriptor;
-    }
-    const descriptors = fs.list(rootUri, true).filter((entry) =>
-        entry.type === "file" && entry.name.toLowerCase() === "canoe-project.json");
-    if (descriptors.length > 1) {
-        throw new Error("CANOE_PROJECT contains multiple canoe-project.json files");
-    }
-    return descriptors.length === 1 ? descriptors[0].uri : "";
+function archiveFiles(rootUri) {
+    return fs.list(rootUri, true).filter((entry) => entry.type === "file");
 }
 
-function loadProject(extractionRootUri) {
-    const descriptorUri = findProjectDescriptor(extractionRootUri);
-    if (descriptorUri) {
-        const rootUri = parentUri(descriptorUri);
-        const descriptor = readJson(descriptorUri, "canoe-project.json");
-        if (Array.isArray(descriptor)) {
-            throw new Error("canoe-project.json must contain an object");
-        }
-        return { rootUri, descriptor, usesProjectTestSetup: false };
+function relativeFiles(rootUri, entries) {
+    return entries.map((entry) => relativePath(rootUri, entry.uri));
+}
+
+function findCanoeManifest(entries) {
+    const manifests = entries.filter((entry) =>
+        entry.name.toLowerCase() === "canoe.json");
+    if (manifests.length > 1) {
+        throw new Error("CANOE_PROJECT contains multiple canoe.json files");
+    }
+    return manifests.length === 1 ? manifests[0] : null;
+}
+
+function safeReportPrefix(index, configuration) {
+    const path = String(configuration).replace(/\\/g, "/");
+    const stem = path.substring(path.lastIndexOf("/") + 1)
+        .replace(/\.cfg$/i, "");
+    const normalized = stem.replace(/[^A-Za-z0-9._-]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+    return `project-${String(index + 1).padStart(3, "0")}-${normalized || "canoe"}`;
+}
+
+function buildConfigurationPlans(extractionRootUri, testCaseUri) {
+    const extractedFiles = archiveFiles(extractionRootUri);
+    const testCasePlans = testCaseUri
+        ? parseTestCaseConfiguration(fs.readText(testCaseUri)) : null;
+    const manifest = testCasePlans === null
+        ? findCanoeManifest(extractedFiles) : null;
+    let rootUri = extractionRootUri;
+    let rootFiles = extractedFiles;
+
+    if (testCasePlans === null && manifest !== null
+            && manifest.uri !== `${extractionRootUri}/canoe.json`) {
+        rootUri = parentUri(manifest.uri);
+        rootFiles = archiveFiles(rootUri);
+    }
+    const availableConfigurations = relativeFiles(rootUri, rootFiles.filter((entry) =>
+        entry.name.toLowerCase().endsWith(".cfg")));
+    if (testCasePlans !== null) {
+        const configurations = validateConfigurationPaths(
+            testCasePlans.map((plan) => plan.configuration),
+            availableConfigurations);
+        const byPath = new Map(testCasePlans.map((plan) =>
+            [plan.configuration.toLowerCase(), plan]));
+        return {
+            rootUri,
+            source: "TEST_CASES",
+            plans: configurations.map((configuration) => ({
+                configuration,
+                testCaseNames: byPath.get(configuration.toLowerCase()).testCaseNames
+            }))
+        };
     }
 
-    const configurations = fs.list(extractionRootUri, true).filter((entry) =>
-        entry.type === "file" && entry.name.toLowerCase().endsWith(".cfg"));
-    if (configurations.length === 0) {
-        throw new Error(
-            "CANOE_PROJECT must contain canoe-project.json or one CANoe .cfg file");
+    let configurationPaths;
+    let source;
+    if (manifest !== null) {
+        const manifestValue = readJson(manifest.uri, "canoe.json");
+        configurationPaths = selectCompatibleConfigurations(
+            manifestValue, canoe.version);
+        source = `canoe.json (CANoe ${canoe.version} compatibility)`;
+    } else {
+        configurationPaths = sortConfigurationPaths(availableConfigurations);
+        source = "archive .cfg files (relative path order)";
     }
-    if (configurations.length > 1) {
-        throw new Error(
-            "CANOE_PROJECT contains multiple CANoe .cfg files; add canoe-project.json to select one");
+    const resolvedConfigurations = validateConfigurationPaths(
+        configurationPaths, availableConfigurations);
+    if (resolvedConfigurations.length === 0) {
+        throw new Error("CANOE_PROJECT does not contain a CANoe .cfg file");
     }
-
-    const configurationPath = relativePath(extractionRootUri,
-                                           configurations[0].uri);
-    task.info(`Using native CANoe project configuration: ${configurationPath}`);
     return {
-        rootUri: extractionRootUri,
-        descriptor: {
-            ContractVersion: CONTRACT_VERSION,
-            Configuration: configurationPath
-        },
-        usesProjectTestSetup: true
+        rootUri,
+        source,
+        plans: resolvedConfigurations.map((configuration) => ({
+            configuration,
+            testCaseNames: []
+        }))
     };
-}
-
-function descriptorValue(name, fallback) {
-    const value = projectDescriptor && projectDescriptor[name];
-    return value === undefined || value === null || value === "" ? fallback : value;
-}
-
-function canoeTimeout(name, fallback) {
-    const configured = Number(descriptorValue(name, fallback));
-    return Number.isFinite(configured) && configured > 0
-        ? Math.floor(configured) : fallback;
 }
 
 function collectionCount(collection) {
@@ -415,90 +434,6 @@ function stableNativeReportUris() {
     return stableEntries.map((entry) => entry.uri);
 }
 
-function parseIds(uri) {
-    if (!uri || !fs.exists(uri)) {
-        return [];
-    }
-    const text = fs.readText(uri).trim();
-    if (!text) {
-        return [];
-    }
-    const isJson = uri.toLowerCase().endsWith(".json")
-        || text.startsWith("[") || text.startsWith("{");
-    if (isJson) {
-        let value;
-        try {
-            value = JSON.parse(text);
-        } catch (error) {
-            throw new Error(`TEST_CASE_IDS is not valid JSON: ${error.message}`);
-        }
-        if (value === null || typeof value !== "object") {
-            throw new Error("TEST_CASE_IDS must contain a JSON object or array");
-        }
-        if (Array.isArray(value)) {
-            return value.map((item) => String(item).trim()).filter((item) => item.length > 0);
-        }
-        for (const key of ["ids", "testCaseIds", "TestCaseIds", "cases"]) {
-            if (Array.isArray(value[key])) {
-                return value[key].map((item) => String(item).trim())
-                    .filter((item) => item.length > 0);
-            }
-        }
-        throw new Error("TEST_CASE_IDS JSON must contain an array of IDs");
-    }
-    return text.split(/[\r\n,;]+/).map((item) => item.trim())
-        .filter((item) => item.length > 0);
-}
-
-function descriptorScripts() {
-    const entries = descriptorValue("TestScripts", descriptorValue("Scripts", []));
-    if (!Array.isArray(entries)) {
-        throw new Error("canoe-project.json TestScripts must be an array");
-    }
-    return entries.map((entry) => {
-        const path = typeof entry === "string" ? entry : entry && (entry.Path || entry.path);
-        if (!path) {
-            throw new Error("Each TestScripts entry must provide a relative Path");
-        }
-        const name = typeof entry === "object" && entry !== null
-            ? (entry.Name || entry.name || "") : "";
-        const kind = typeof entry === "object" && entry !== null
-            ? (entry.Type || entry.type || "") : "";
-        return {
-            path: requireSafeRelativePath(path, "TestScripts entry"),
-            name: String(name),
-            kind: normalize(kind)
-        };
-    });
-}
-
-function scriptKind(name, declaredKind = "") {
-    if (declaredKind) {
-        return declaredKind.includes("communication") || declaredKind === "comm"
-            ? "communication" : "vtest";
-    }
-    return name.toLowerCase().endsWith(".vtuexe") ? "vtest" : "communication";
-}
-
-function scriptExtension(uri) {
-    const name = baseName(uri).toLowerCase();
-    const index = name.lastIndexOf(".");
-    return index >= 0 ? name.substring(index) : "";
-}
-
-function registerScript(script) {
-    scriptUris.push(script);
-    if (script.kind !== "communication") {
-        return;
-    }
-    if (scriptExtension(script.uri) === ".tse") {
-        communicationScriptUris.push(script.uri);
-    } else if (scriptExtension(script.uri) === ".xml") {
-        const name = script.name || baseName(script.uri);
-        communicationModuleNames.push(name.replace(/\.xml$/i, ""));
-    }
-}
-
 function executionState(object, started = true) {
     if (!started || object === null || object === undefined) {
         return { known: false, running: false };
@@ -552,11 +487,36 @@ function testCaseId(testCase) {
         || optionalProperty(testCase, "Caption") || "");
 }
 
-function walkElements(elements, unitName) {
+function testCaseName(testCase) {
+    return String(optionalProperty(testCase, "Name")
+        || optionalProperty(testCase, "Caption")
+        || optionalProperty(testCase, "Id") || "");
+}
+
+function matchesRequestedTestCase(candidate) {
+    return requestedTestCaseNames.length === 0
+        || requestedTestCaseNames.includes(candidate.name);
+}
+
+function validateRequestedTestCases(candidates) {
+    if (requestedTestCaseNames.length === 0) {
+        return;
+    }
+    const available = new Set(candidates.map((candidate) => candidate.name));
+    const missing = requestedTestCaseNames.filter((name) => !available.has(name));
+    if (missing.length > 0) {
+        throw new Error("TEST_CASES names do not match CANoe test cases: "
+            + missing.join(", "));
+    }
+}
+
+function walkElements(elements, unitName, parentEnabled = true, parents = []) {
     const local = [];
     for (const element of collectionItems(elements)) {
         const type = normalize(optionalProperty(element, "Type"));
         const id = testCaseId(element);
+        const name = testCaseName(element);
+        const enabled = parentEnabled && optionalProperty(element, "Enabled") !== false;
         const verdictValue = optionalProperty(element, "Verdict");
         const children = propertyOr(element, ["Elements", "Sequence"], null);
         const hasChildren = children !== undefined && children !== null
@@ -564,16 +524,46 @@ function walkElements(elements, unitName) {
         const isCase = type.includes("testcase") || type.includes("test_case")
             || (!hasChildren && verdictValue !== undefined && id !== "");
         if (isCase) {
-            local.push({ testUnit: unitName, id, name: id, object: element });
+            local.push({ testUnit: unitName, id, name, enabled, parents, object: element });
         }
         if (children !== undefined && children !== null) {
-            const nested = walkElements(children, unitName);
+            const nested = walkElements(children, unitName, enabled, [...parents, element]);
             for (const child of nested) {
                 local.push(child);
             }
         }
     }
     return local;
+}
+
+function selectProjectTestCases(candidates) {
+    const selected = candidates.filter((candidate) =>
+        matchesRequestedTestCase(candidate)
+        && (requestedTestCaseNames.length > 0 || candidate.enabled));
+    if (requestedTestCaseNames.length === 0) {
+        return selected;
+    }
+    const parents = new Set();
+    for (const candidate of candidates) {
+        const enabled = selected.includes(candidate);
+        try {
+            candidate.object.set("Enabled", enabled);
+        } catch (error) {
+            throwIfAutomationDisconnected(error);
+        }
+        if (enabled) {
+            candidate.parents.forEach((parent) => parents.add(parent));
+        }
+    }
+    // 指定的用例可能在已禁用的测试组中，必须同时启用其全部父组。
+    for (const parent of parents) {
+        try {
+            parent.set("Enabled", true);
+        } catch (error) {
+            throwIfAutomationDisconnected(error);
+        }
+    }
+    return selected;
 }
 
 function collectVerdictsFrom(units) {
@@ -640,13 +630,18 @@ function completedCaseCount(units) {
 function configuredTestCases(units) {
     const output = [];
     for (const unit of collectionItems(units)) {
+        if (requestedTestCaseNames.length === 0
+                && optionalProperty(unit, "Enabled") === false) {
+            continue;
+        }
         const unitName = String(optionalProperty(unit, "Name") || "");
         const elements = elementsFor(unit);
         if (elements === null || elements === undefined) {
             continue;
         }
         for (const candidate of walkElements(elements, unitName)) {
-            if (requestedIds.length === 0 || requestedIds.includes(candidate.id)) {
+            if (matchesRequestedTestCase(candidate)
+                    && (requestedTestCaseNames.length > 0 || candidate.enabled)) {
                 output.push({
                     testUnit: candidate.testUnit,
                     id: candidate.id,
@@ -730,8 +725,7 @@ async function runReportViewer(nativeReportUri, option, outputUri, type,
     if (!fs.exists(nativeReportUri)) {
         throw new Error(`CANoe Report Viewer source report is missing: ${nativeReportPath}`);
     }
-    const timeoutMs = canoeTimeout("ReportConversionTimeoutMs",
-                                   CANOE_REPORT_CONVERSION_TIMEOUT_MS);
+    const timeoutMs = CANOE_REPORT_CONVERSION_TIMEOUT_MS;
     const startedAt = Date.now();
     let attempt = 0;
     let lastFailure = "";
@@ -786,7 +780,8 @@ async function runReportViewer(nativeReportUri, option, outputUri, type,
 
 export function reportOutputUri(type, index, total) {
     const suffix = total === 1 ? "" : `-${index + 1}`;
-    return `${reportsDirectoryUri()}/canoe-test${suffix}.${type.toLowerCase()}`;
+    const prefix = currentReportPrefix || "canoe-test";
+    return `${reportsDirectoryUri()}/${prefix}-report${suffix}.${type.toLowerCase()}`;
 }
 
 function registerNativeReports(nativeReportUris) {
@@ -871,8 +866,7 @@ function runHtmlTransform(xmlUri, outputUri, executable, stylesheet) {
             nativeFileUri(fs.nativePath(outputUri))
         ],
         workingDirectoryUri: projectRootUri,
-        timeoutMs: canoeTimeout("ReportConversionTimeoutMs",
-                                CANOE_REPORT_CONVERSION_TIMEOUT_MS)
+        timeoutMs: CANOE_REPORT_CONVERSION_TIMEOUT_MS
     });
     if (result.crashed || result.exitCode !== 0) {
         throw new Error(sabCommandFailure(result, xmlPath));
@@ -914,22 +908,21 @@ function convertXmlReportsToHtml(xmlReportUris) {
     }
 }
 
-async function generateSelectedReports() {
+async function generateSelectedReports({ignoreCancellation = false} = {}) {
     const nativeReportUris = await waitForNativeReportOutputs({
         requested: nativeReportRequested(),
         waitForDiscovery: () => wait.until(
             () => stableNativeReportUris(),
             {
-                timeoutMs: canoeTimeout("ReportGenerationTimeoutMs",
-                                         CANOE_REPORT_GENERATION_TIMEOUT_MS),
+                timeoutMs: CANOE_REPORT_GENERATION_TIMEOUT_MS,
                 description: "CANoe reports to be generated",
-                isReady: (value) => value.length > 0
+                isReady: (value) => value.length > 0,
+                ignoreCancellation
             }),
         abortOnError: throwIfAutomationDisconnected,
         recordError: addReportError
     });
     registerNativeReports(nativeReportUris);
-    publishSelectedReports();
 
     if (nativeReportUris.length === 0 && reportTypes.length > 0) {
         addReportError("CANoe did not generate a native test report");
@@ -938,6 +931,19 @@ async function generateSelectedReports() {
             && !nativeReportUris.some((uri) =>
                 uri.toLowerCase().endsWith(".vtestreport"))) {
         addReportError("CANoe did not generate the requested vtestreport output");
+    }
+    if (ignoreCancellation) {
+        const conversionTypes = reportTypes.filter((type) =>
+            type === REPORT_TYPE_HTML || type === REPORT_TYPE_PDF
+                || (type === REPORT_TYPE_XML
+                    && !nativeReportUris.some((uri) =>
+                        uri.toLowerCase().endsWith(".xml"))));
+        if (conversionTypes.length > 0) {
+            addReportError("Report conversion was skipped during cancellation cleanup: "
+                + conversionTypes.join(", "));
+        }
+        publishSelectedReports();
+        return;
     }
     let xmlReportUris = nativeReportUris.filter((uri) =>
         uri.toLowerCase().endsWith(".xml"));
@@ -996,88 +1002,54 @@ function collectCommunicationModules(environment, output) {
     }
 }
 
-function removeAll(collection, methodName, secondArgument) {
-    for (let index = collectionCount(collection); index >= 1; --index) {
-        try {
-            if (secondArgument === undefined) {
-                collection.call(methodName, index);
-            } else {
-                collection.call(methodName, index, secondArgument);
-            }
-        } catch (error) {
-            throwIfAutomationDisconnected(error);
-            // 已失效的可选条目不应阻止后续条目移除。
-        }
-    }
-}
-
 function configureVtest() {
-    const configurations = canoe.configuration.get("TestConfigurations");
-    const useExistingTestConfiguration = useProjectTestSetup
-        && scriptUris.length === 0;
-    if (collectionCount(configurations) === 0) {
-        if (useExistingTestConfiguration) {
-            throw new Error("CANoe project does not contain a TestConfiguration");
-        }
-        configurations.call("Add");
+    const configurations = collectionItems(
+        canoe.configuration.get("TestConfigurations"));
+    if (configurations.length === 0) {
+        throw new Error("CANoe project does not contain a TestConfiguration");
     }
-    testConfiguration = collectionItems(configurations)[0];
+    testConfiguration = requestedTestCaseNames.length > 0
+        ? configurations[0]
+        : configurations.find((configuration) =>
+            optionalProperty(configuration, "Enabled") !== false);
     if (testConfiguration === undefined) {
-        throw new Error("CANoe configuration could not create a TestConfiguration");
+        throw new Error("CANoe project does not have an enabled TestConfiguration");
     }
-    if (!useExistingTestConfiguration) {
-        const configurationName = descriptorValue("TestConfiguration", DEFAULT_TEST_CONFIGURATION);
-        testConfiguration.set("Name", configurationName);
-    }
-    testConfiguration.set("Enabled", true);
-    if (!useExistingTestConfiguration) {
-        const settings = optionalProperty(testConfiguration, "Settings");
-        if (settings !== undefined) {
-            try {
-                settings.set("ExecutionMode", 0);
-            } catch (error) {
-                throwIfAutomationDisconnected(error);
-                // 旧版 CANoe 使用默认的单次执行模式。
-            }
-        }
+    if (requestedTestCaseNames.length > 0) {
+        testConfiguration.set("Enabled", true);
     }
     testUnits = testConfiguration.get("TestUnits");
-    if (!useExistingTestConfiguration) {
-        removeAll(testUnits, "Remove");
-        for (const script of scriptUris) {
-            testUnits.call("Add", fs.nativePath(script.uri));
-        }
-    }
     const units = collectionItems(testUnits);
     const selected = [];
+    const availableCases = [];
     for (const unit of units) {
+        const unitEnabled = optionalProperty(unit, "Enabled") !== false;
+        if (!unitEnabled && requestedTestCaseNames.length === 0) {
+            continue;
+        }
         const elements = elementsFor(unit);
         if (elements === null || elements === undefined) {
             continue;
         }
         const candidates = walkElements(
             elements, String(optionalProperty(unit, "Name") || ""));
-        const selectedCandidates = candidates.filter((candidate) =>
-            requestedIds.length === 0 || requestedIds.includes(candidate.id));
-        for (const candidate of candidates) {
+        availableCases.push(...candidates);
+        const selectedCandidates = selectProjectTestCases(candidates);
+        if (requestedTestCaseNames.length > 0) {
             try {
-                candidate.object.set("Enabled", selectedCandidates.includes(candidate));
+                unit.set("Enabled", selectedCandidates.length > 0);
             } catch (error) {
                 throwIfAutomationDisconnected(error);
+                // 部分 CANoe 版本会隐式启用测试单元。
             }
         }
-        try {
-            unit.set("Enabled", selectedCandidates.length > 0);
-        } catch (error) {
-            throwIfAutomationDisconnected(error);
-            // 部分 CANoe 版本会隐式启用测试单元。
-        }
         for (const candidate of selectedCandidates) {
-            selected.push(candidate.id);
+            selected.push(candidate.name);
         }
     }
+    validateRequestedTestCases(availableCases);
     if (selected.length === 0) {
-        throw new Error("No enabled CANoe test case matches TEST_CASE_IDS");
+        throw new Error("No enabled CANoe test case matches TEST_CASES");
     }
     selectedTestCases = configuredTestCases(testUnits);
     expectedResultCount = selectedTestCases.length;
@@ -1087,12 +1059,6 @@ function configureVtest() {
 function configureCommunication() {
     const setup = canoe.configuration.get("TestSetup");
     const environments = setup.get("TestEnvironments");
-    if (communicationScriptUris.length > 0) {
-        removeAll(environments, "Remove", false);
-        for (const uri of communicationScriptUris) {
-            environments.call("Add", fs.nativePath(uri));
-        }
-    }
     const environmentList = collectionItems(environments);
     if (environmentList.length === 0) {
         throw new Error("CANoe configuration could not create a TestEnvironment");
@@ -1100,57 +1066,50 @@ function configureCommunication() {
     communicationModules = [];
     activeCommunicationModules = [];
     for (const environment of environmentList) {
-        try {
-            environment.set("Enabled", true);
-        } catch (error) {
-            throwIfAutomationDisconnected(error);
-            // 部分 CANoe 版本不允许写入 TestEnvironment.Enabled。
+        if (requestedTestCaseNames.length === 0
+                && optionalProperty(environment, "Enabled") === false) {
+            continue;
+        }
+        if (requestedTestCaseNames.length > 0) {
+            try {
+                environment.set("Enabled", true);
+            } catch (error) {
+                throwIfAutomationDisconnected(error);
+                // 部分 CANoe 版本不允许写入 TestEnvironment.Enabled。
+            }
         }
         collectCommunicationModules(environment, communicationModules);
     }
     const selected = [];
+    const availableCases = [];
     for (const module of communicationModules) {
-        const moduleName = String(optionalProperty(module, "Name") || "");
-        const baseModuleName = moduleName.replace(/_\d+$/, "");
-        if (communicationModuleNames.length > 0
-                && !communicationModuleNames.some((name) => {
-                    const normalizedName = String(name).replace(/_\d+$/, "");
-                    return normalize(normalizedName) === normalize(baseModuleName);
-                })) {
-            try {
-                module.set("Enabled", false);
-            } catch (error) {
-                throwIfAutomationDisconnected(error);
-                // Enabled 属性可能由父级测试环境管理。
-            }
+        if (requestedTestCaseNames.length === 0
+                && optionalProperty(module, "Enabled") === false) {
             continue;
         }
+        const moduleName = String(optionalProperty(module, "Name") || "");
         const elements = elementsFor(module);
         const candidates = walkElements(elements, moduleName);
-        const selectedCandidates = candidates.filter((candidate) =>
-            requestedIds.length === 0 || requestedIds.includes(candidate.id));
-        for (const candidate of candidates) {
+        availableCases.push(...candidates);
+        const selectedCandidates = selectProjectTestCases(candidates);
+        if (requestedTestCaseNames.length > 0) {
             try {
-                candidate.object.set("Enabled", selectedCandidates.includes(candidate));
+                module.set("Enabled", selectedCandidates.length > 0);
             } catch (error) {
                 throwIfAutomationDisconnected(error);
+                // 部分 CANoe 版本由父级测试环境控制模块启用状态。
             }
-        }
-        try {
-            module.set("Enabled", selectedCandidates.length > 0);
-        } catch (error) {
-            throwIfAutomationDisconnected(error);
-            // 部分 CANoe 版本由父级测试环境控制模块启用状态。
         }
         if (selectedCandidates.length > 0) {
             activeCommunicationModules.push(module);
             for (const candidate of selectedCandidates) {
-                selected.push(candidate.id);
+                selected.push(candidate.name);
             }
         }
     }
+    validateRequestedTestCases(availableCases);
     if (selected.length === 0) {
-        throw new Error("No enabled CANoe communication test case matches TEST_CASE_IDS");
+        throw new Error("No enabled CANoe communication test case matches TEST_CASES");
     }
     selectedTestCases = [];
     for (const module of activeCommunicationModules) {
@@ -1163,16 +1122,22 @@ function configureProjectTests() {
     const setup = optionalProperty(canoe.configuration, "TestSetup");
     const environments = setup === undefined || setup === null
         ? null : optionalProperty(setup, "TestEnvironments");
-    if (environments !== null && environments !== undefined
-            && collectionCount(environments) > 0) {
+    const activeEnvironments = environments === null || environments === undefined
+        ? [] : collectionItems(environments).filter((environment) =>
+            requestedTestCaseNames.length > 0
+                || optionalProperty(environment, "Enabled") !== false);
+    if (activeEnvironments.length > 0) {
         testMode = "communication";
         configureCommunication();
         return;
     }
 
     const configurations = optionalProperty(canoe.configuration, "TestConfigurations");
-    if (configurations !== null && configurations !== undefined
-            && collectionCount(configurations) > 0) {
+    const activeConfigurations = configurations === null || configurations === undefined
+        ? [] : collectionItems(configurations).filter((configuration) =>
+            requestedTestCaseNames.length > 0
+                || optionalProperty(configuration, "Enabled") !== false);
+    if (activeConfigurations.length > 0) {
         testMode = "vtest";
         configureVtest();
         return;
@@ -1225,14 +1190,6 @@ function configureModuleExecution(module) {
     }
 }
 
-function optionalDevice(key) {
-    try {
-        return task.device(key);
-    } catch (_) {
-        return "";
-    }
-}
-
 function optionalRequirementText(key) {
     const value = optionalRequirement(key);
     if (value === undefined || value === null || String(value).trim() === "") {
@@ -1272,22 +1229,19 @@ function parseReportTypes(value) {
 
 async function openConfiguration() {
     if (canoe.application === null) {
-        throw new Error("CANoe Automation is not connected");
+        const error = new Error("CANoe Automation is not connected");
+        error.canoeFatal = true;
+        throw error;
     }
     await canoe.openConfiguration(configurationUri, {
-        setupReady: useProjectTestSetup && !projectTestSetupReady
+        setupReady: !projectTestSetupReady
             ? hasProjectTestSetup : null,
         setupDescription: "CANoe project test setup to finish loading",
-        configurationTimeoutMs: canoeTimeout("ConfigurationReadyTimeoutMs",
-                                            CANOE_CONFIGURATION_READY_TIMEOUT_MS),
-        setupTimeoutMs: canoeTimeout("TestSetupReadyTimeoutMs",
-                                     CANOE_TEST_SETUP_READY_TIMEOUT_MS),
-        measurementStopTimeoutMs: canoeTimeout("MeasurementStopTimeoutMs",
-                                                CANOE_MEASUREMENT_STOP_TIMEOUT_MS)
+        configurationTimeoutMs: CANOE_CONFIGURATION_READY_TIMEOUT_MS,
+        setupTimeoutMs: CANOE_TEST_SETUP_READY_TIMEOUT_MS,
+        measurementStopTimeoutMs: CANOE_MEASUREMENT_STOP_TIMEOUT_MS
     });
-    if (useProjectTestSetup) {
-        projectTestSetupReady = true;
-    }
+    projectTestSetupReady = true;
     debug("openConfiguration: completed");
 }
 
@@ -1295,11 +1249,14 @@ export async function prepare(projectPackage) {
     debug("prepare: starting");
     projectRootUri = "workspace://canoe-test/project";
     configurationUri = "";
-    scriptUris = [];
+    configurationPlans = [];
+    activeProject = null;
+    projectOutcomes = [];
+    summaryPublished = false;
+    currentReportPrefix = "";
+    publicationTypeCounts = {};
     communicationModules = [];
     activeCommunicationModules = [];
-    communicationScriptUris = [];
-    communicationModuleNames = [];
     testConfiguration = null;
     testConfigurationReport = null;
     testUnits = null;
@@ -1310,58 +1267,36 @@ export async function prepare(projectPackage) {
     reportFileTracker = new ReportFileTracker();
     publishedArtifactUris = [];
     testMode = "";
-    requestedIds = [];
+    requestedTestCaseNames = [];
     results = [];
     testStarted = false;
     executionCompleted = false;
     activeTestTarget = null;
     expectedResultCount = 0;
     selectedTestCases = [];
-    useProjectTestSetup = false;
     projectTestSetupReady = false;
     debug("prepare: extracting project package");
     fs.extractZip(projectPackage, projectRootUri);
-    const project = loadProject(projectRootUri);
-    projectRootUri = project.rootUri;
-    projectDescriptor = project.descriptor;
-    useProjectTestSetup = project.usesProjectTestSetup;
-    if (String(projectDescriptor.ContractVersion) !== CONTRACT_VERSION) {
-        throw new Error(`Unsupported canoe-project.json contract: ${projectDescriptor.ContractVersion}`);
+    const plan = buildConfigurationPlans(
+        projectRootUri, optionalRequirement("TEST_CASES"));
+    projectRootUri = plan.rootUri;
+    configurationPlans = plan.plans;
+    testMode = "project";
+    if (configurationPlans.length > 990) {
+        throw new Error("CANOE_PROJECT contains too many .cfg files for dynamic stages");
     }
-    const configurationPath = requireSafeRelativePath(
-        descriptorValue("Configuration", ""), "Configuration");
-    configurationUri = `${projectRootUri}/${configurationPath}`;
-    if (!fs.exists(configurationUri)) {
-        throw new Error(`CANoe configuration is missing: ${configurationPath}`);
-    }
-    canoe.validateProjectVersion(configurationUri);
-
-    for (const entry of descriptorScripts()) {
-        const uri = `${projectRootUri}/${entry.path}`;
-        if (!fs.exists(uri)) {
-            throw new Error(`CANoe test script is missing: ${entry.path}`);
-        }
-        const kind = scriptKind(entry.path, entry.kind);
-        if (!testMode) {
-            testMode = kind;
-        } else if (testMode !== kind) {
-            throw new Error("VTESTStudio and communication scripts cannot be mixed in one task");
-        }
-        registerScript({ uri, kind, name: entry.name || baseName(uri) });
-    }
-    if (scriptUris.length === 0) {
-        // 未声明测试脚本时回落到工程原生测试设置：configure 阶段复用
-        // .cfg 中已有的 TestConfiguration 或 TestEnvironment。
-        useProjectTestSetup = true;
-        testMode = "project";
-        debug("prepare: no TestScripts declared; falling back to the CANoe project test setup");
-    }
-    requestedIds = parseIds(optionalRequirement("TEST_CASE_IDS"));
-    if (requestedIds.length === 0 && Array.isArray(projectDescriptor.TestCaseIds)) {
-        requestedIds = projectDescriptor.TestCaseIds.map((id) => String(id));
-    }
+    // 首个工程提前核验，避免明知不兼容时仍启动 CANoe；后续工程到执行时再核验。
+    canoe.validateProjectVersion(
+        `${projectRootUri}/${configurationPlans[0].configuration}`);
     reportTypes = parseReportTypes(optionalRequirementText("CANOE_REPORT_TYPE"));
-    debug(`prepare: completed (mode=${testMode}, requestedCases=${requestedIds.length}, reports=${reportTypes.join(",")})`);
+    task.info(`CANoe project plan source: ${plan.source}`);
+    task.info(`CANoe project plan contains ${configurationPlans.length} configuration(s)`);
+    configurationPlans.forEach((entry, index) => {
+        task.info(`CANoe project ${index + 1}: ${entry.configuration}`
+            + (entry.testCaseNames.length > 0
+                ? ` (test cases: ${entry.testCaseNames.join(", ")})` : ""));
+    });
+    debug(`prepare: completed (projects=${configurationPlans.length}, reports=${reportTypes.join(",")})`);
     task.progress(5);
 }
 
@@ -1372,20 +1307,17 @@ export async function launch() {
         debug("launch: using an existing CANoe process");
         task.info("Attaching to an existing CANoe process");
         await canoe.launch({
-            attachExisting: true,
-            clearExisting: false
+            attachExisting: true
         });
         return;
     }
     const executable = canoe.installedExecutable();
     debug(`launch: starting discovered CANoe ${canoe.version} executable: ${executable}`);
-    debug(`launch: project configuration will be opened during configure: ${configurationUri}`);
+    debug(`launch: ${configurationPlans.length} project configuration(s) will be opened in order`);
     await canoe.launch({
         attachExisting: false,
-        clearExisting: startMode.clearExisting,
         executable,
-        clearTimeoutMs: canoeTimeout("AutomationReadyTimeoutMs",
-                                    CANOE_AUTOMATION_READY_TIMEOUT_MS)
+        clearTimeoutMs: CANOE_AUTOMATION_READY_TIMEOUT_MS
     });
     debug(`launch: CANoe process started (pid=${canoe.process.pid})`);
 }
@@ -1397,20 +1329,248 @@ export async function connect() {
         : "connect: activating the configured CANoe Automation server");
     await canoe.connect({
         attached: canoe.attached,
-        timeoutMs: canoeTimeout("AutomationReadyTimeoutMs",
-                                CANOE_AUTOMATION_READY_TIMEOUT_MS)
+        timeoutMs: CANOE_AUTOMATION_READY_TIMEOUT_MS
     });
     debug("connect: completed");
 }
 
-export async function startMeasurement() {
+function prepareProjectExecution(index) {
+    const plan = configurationPlans[index];
+    if (plan === undefined) {
+        throw new Error("Dynamic CANoe project stage refers to an unknown configuration");
+    }
+    configurationUri = `${projectRootUri}/${plan.configuration}`;
+    currentReportPrefix = safeReportPrefix(index, plan.configuration);
+    requestedTestCaseNames = plan.testCaseNames.slice();
+    communicationModules = [];
+    activeCommunicationModules = [];
+    testConfiguration = null;
+    testConfigurationReport = null;
+    testUnits = null;
+    results = [];
+    testMode = "project";
+    generatedReports = [];
+    executionFailureMessage = "";
+    reportErrors = [];
+    reportFileTracker = new ReportFileTracker();
+    testStarted = false;
+    executionCompleted = false;
+    expectedResultCount = 0;
+    selectedTestCases = [];
+    projectTestSetupReady = false;
+    activeTestTarget = null;
+    activeProject = {
+        Index: index + 1,
+        Configuration: plan.configuration,
+        TestCaseNames: plan.testCaseNames.slice(),
+        Status: "running",
+        Completed: false,
+        ExpectedResultCount: 0,
+        Results: [],
+        ExecutionError: "",
+        ReportErrors: [],
+        Reports: [],
+        Artifacts: [],
+        ReportsCollected: false
+    };
+    projectOutcomes.push(activeProject);
+}
+
+function addProjectStage(index) {
+    const plan = configurationPlans[index];
+    if (plan === undefined) {
+        throw new Error("Unable to add a dynamic stage for an unknown CANoe configuration");
+    }
+    const stageNumber = String(index + 1).padStart(3, "0");
+    task.addStage({
+        stageId: `canoe_project_${stageNumber}`,
+        name: `执行 CANoe 工程 ${index + 1}/${configurationPlans.length}: ${plan.configuration}`,
+        exportName: "executeProject",
+        timeoutMs: 86400000,
+        arguments: [index]
+    });
+}
+
+function isFatalProjectError(error) {
+    return Boolean(error && error.canoeFatal)
+        || isAutomationDisconnectFailure(error);
+}
+
+function appendProjectExecutionError(message) {
+    if (activeProject === null || !message) {
+        return;
+    }
+    const current = activeProject.ExecutionError;
+    if (!current.split("; ").includes(message)) {
+        activeProject.ExecutionError = current === ""
+            ? message : `${current}; ${message}`;
+    }
+}
+
+function updateProjectOutcome() {
+    if (activeProject === null) {
+        return;
+    }
+    activeProject.Completed = executionCompleted;
+    activeProject.ExpectedResultCount = expectedResultCount;
+    activeProject.Results = results.map((result) => ({...result}));
+    if (executionFailureMessage !== "") {
+        appendProjectExecutionError(executionFailureMessage);
+    }
+    activeProject.ReportErrors = reportErrors.slice();
+    activeProject.Reports = generatedReports.map((report) => ({
+        Type: report.type,
+        Uri: report.uri
+    }));
+    activeProject.Status = activeProject.ExecutionError === ""
+            && activeProject.ReportErrors.length === 0
+            && executionCompleted && testPassed()
+            && results.length === expectedResultCount
+        ? "passed" : "failed";
+}
+
+async function closeProjectResources() {
+    let cleanupError = null;
+    if (testStarted) {
+        if (testConfiguration !== null) {
+            try {
+                testConfiguration.call("Stop");
+            } catch (error) {
+                try {
+                    throwIfAutomationDisconnected(error);
+                } catch (fatalError) {
+                    cleanupError = fatalError;
+                }
+                if (cleanupError === null) {
+                    cleanupError = error;
+                    task.warning(`Unable to stop CANoe TestConfiguration: ${errorMessage(error)}`);
+                }
+            }
+        }
+        for (const module of activeCommunicationModules) {
+            try {
+                module.call("Stop");
+            } catch (error) {
+                try {
+                    throwIfAutomationDisconnected(error);
+                } catch (fatalError) {
+                    cleanupError = fatalError;
+                }
+                if (cleanupError === null) {
+                    cleanupError = error;
+                    task.warning(`Unable to stop CANoe communication module: ${errorMessage(error)}`);
+                }
+            }
+        }
+    }
+    activeTestTarget = null;
+    try {
+        const activeConfigurationUri = String(canoe.configurationUri || "");
+        if (activeConfigurationUri.toLowerCase() === configurationUri.toLowerCase()) {
+            try {
+                await canoe.closeConfiguration({
+                    timeoutMs: CANOE_MEASUREMENT_STOP_TIMEOUT_MS
+                });
+            } catch (error) {
+                if (cleanupError === null || isFatalProjectError(error)) {
+                    cleanupError = error;
+                }
+            }
+        }
+    } finally {
+        release(testConfigurationReport);
+        release(testUnits);
+        release(testConfiguration);
+        testConfiguration = null;
+        testConfigurationReport = null;
+        testUnits = null;
+        communicationModules = [];
+        activeCommunicationModules = [];
+        testStarted = false;
+        activeTestTarget = null;
+    }
+    if (cleanupError !== null) {
+        throw cleanupError;
+    }
+}
+
+export function beginExecution() {
+    if (configurationPlans.length === 0) {
+        throw new Error("No CANoe configurations are available to execute");
+    }
+    task.info(`Starting ${configurationPlans.length} CANoe configuration(s) in order`);
+    addProjectStage(0);
+    task.progress(10);
+}
+
+export async function executeProject(index) {
+    if (!Number.isInteger(index) || index < 0 || index >= configurationPlans.length) {
+        throw new Error("Dynamic CANoe project stage index is invalid");
+    }
+    prepareProjectExecution(index);
+    const plan = configurationPlans[index];
+    task.info(`Opening CANoe project ${index + 1}/${configurationPlans.length}: ${plan.configuration}`);
+    let fatalError = null;
+    try {
+        canoe.validateProjectVersion(configurationUri);
+        await configure();
+        await startMeasurement();
+        await execute();
+        await collectCurrentProjectArtifacts();
+    } catch (error) {
+        appendProjectExecutionError(errorMessage(error));
+        task.error(`CANoe project failed: ${plan.configuration}: ${errorMessage(error)}`);
+        if (isFatalProjectError(error)) {
+            fatalError = error;
+        }
+        try {
+            await collectCurrentProjectArtifacts();
+        } catch (reportError) {
+            addReportError(`Unable to collect the current CANoe report: ${errorMessage(reportError)}`);
+            if (isFatalProjectError(reportError)) {
+                fatalError = fatalError || reportError;
+            }
+        }
+    }
+
+    try {
+        await closeProjectResources();
+    } catch (error) {
+        appendProjectExecutionError(`Project cleanup failed: ${errorMessage(error)}`);
+        if (isFatalProjectError(error)) {
+            fatalError = fatalError || error;
+        }
+    }
+    updateProjectOutcome();
+    task.info(`CANoe project ${plan.configuration} finished with status ${activeProject.Status}`);
+    if (fatalError !== null) {
+        throw fatalError;
+    }
+    if (task.isCancelled()) {
+        task.checkCancelled();
+    }
+    if (index + 1 < configurationPlans.length) {
+        addProjectStage(index + 1);
+    }
+}
+
+export function summarizeExecution() {
+    updateProjectOutcome();
+    publishExecutionSummary();
+    const failures = projectOutcomes.filter((project) => project.Status !== "passed");
+    task.progress(100);
+    if (failures.length > 0) {
+        const failedNames = failures.map((project) => project.Configuration).join(", ");
+        throw new Error(`CANoe execution failed for ${failures.length} project(s): ${failedNames}`);
+    }
+}
+
+async function startMeasurement() {
     debug("startMeasurement: starting");
     await openConfiguration();
     const running = await canoe.ensureMeasurementStarted({
-        readyTimeoutMs: canoeTimeout("AutomationReadyTimeoutMs",
-                                     CANOE_AUTOMATION_READY_TIMEOUT_MS),
-        startTimeoutMs: canoeTimeout("MeasurementStartTimeoutMs",
-                                     CANOE_MEASUREMENT_START_TIMEOUT_MS)
+        readyTimeoutMs: CANOE_AUTOMATION_READY_TIMEOUT_MS,
+        startTimeoutMs: CANOE_MEASUREMENT_START_TIMEOUT_MS
     });
     if (running) {
         debug("startMeasurement: measurement is already running");
@@ -1419,16 +1579,10 @@ export async function startMeasurement() {
     task.progress(10);
 }
 
-export async function configure() {
+async function configure() {
     debug(`configure: starting (mode=${testMode})`);
     await openConfiguration();
-    if (testMode === "project") {
-        configureProjectTests();
-    } else if (testMode === "communication") {
-        configureCommunication();
-    } else {
-        configureVtest();
-    }
+    configureProjectTests();
     configureNativeReport({
         mode: testMode,
         requested: nativeReportRequested(),
@@ -1443,10 +1597,9 @@ export async function configure() {
     task.progress(15);
 }
 
-export async function execute() {
+async function execute() {
     debug(`execute: starting (mode=${testMode}, expectedResults=${expectedResultCount})`);
-    const timeout = Number(projectDescriptor && projectDescriptor.TestTimeoutMs)
-        || DEFAULT_TEST_TIMEOUT_MS;
+    const timeout = DEFAULT_TEST_TIMEOUT_MS;
     if (selectedTestCases.length === 0) {
         throw new Error("No CANoe test cases have been configured");
     }
@@ -1532,16 +1685,22 @@ export function reportPublicationId(type, count) {
 function publishArtifact(source, relative, publicationId, mediaType) {
     const destination = `artifact://canoe-test/${relative}`;
     if (publishedArtifactUris.includes(destination)) {
-        return;
+        if (activeProject !== null
+                && !activeProject.Artifacts.includes(destination)) {
+            activeProject.Artifacts.push(destination);
+        }
+        return false;
     }
     fs.copy(source, destination, true);
-    publishedArtifactUris.push(destination);
     task.publish(publicationId, destination, baseName(relative), mediaType);
+    publishedArtifactUris.push(destination);
+    if (activeProject !== null) {
+        activeProject.Artifacts.push(destination);
+    }
+    return true;
 }
 
 function publishSelectedReports() {
-    const typeCounts = {};
-    const publishedReportPaths = [];
     for (const report of generatedReports) {
         if (!fs.exists(report.uri)) {
             addReportError(`Requested CANoe ${report.type} report is missing`);
@@ -1549,16 +1708,14 @@ function publishSelectedReports() {
         }
         try {
             const sourceRelative = relativePath(projectRootUri, report.uri);
-            const relative = report.type === REPORT_TYPE_VTESTREPORT
-                ? nativeVtestReportArtifactPath(sourceRelative,
-                                                publishedReportPaths)
-                : sourceRelative;
-            const count = (typeCounts[report.type] || 0) + 1;
-            typeCounts[report.type] = count;
+            // 保留工程内相对目录，避免不同模块的同名报告互相覆盖。
+            const relative = `reports/${currentReportPrefix}/${sourceRelative}`;
+            const count = (publicationTypeCounts[report.type] || 0) + 1;
             const publicationId = reportPublicationId(report.type, count);
-            publishArtifact(report.uri, relative, publicationId,
-                            reportMediaType(report.type));
-            publishedReportPaths.push(relative);
+            if (publishArtifact(report.uri, relative, publicationId,
+                                reportMediaType(report.type))) {
+                publicationTypeCounts[report.type] = count;
+            }
         } catch (error) {
             addReportError(`Unable to publish CANoe ${report.type} report: ${errorMessage(error)}`);
         }
@@ -1566,20 +1723,47 @@ function publishSelectedReports() {
 }
 
 function publishExecutionSummary() {
+    if (summaryPublished) {
+        return;
+    }
     const summaryUri = "artifact://canoe-test/execution-result.json";
+    const completed = configurationPlans.length > 0
+        && projectOutcomes.length === configurationPlans.length
+        && projectOutcomes.every((project) => project.Completed);
+    const passed = completed
+        && projectOutcomes.every((project) => project.Status === "passed");
+    const allResults = projectOutcomes.flatMap((project) => project.Results);
+    const allReportErrors = projectOutcomes.flatMap((project) => project.ReportErrors);
+    const executionErrors = projectOutcomes
+        .map((project) => project.ExecutionError)
+        .filter((message) => message !== "");
     fs.writeText(summaryUri, JSON.stringify({
-        TaskId: task.id(), Completed: executionCompleted,
-        ExpectedResultCount: expectedResultCount, Results: results,
-        ExecutionError: executionFailureMessage, ReportErrors: reportErrors
-    }, null, 2));
+        TaskId: task.id(),
+        Completed: completed,
+        Passed: passed,
+        ProjectCount: configurationPlans.length,
+        StartedProjectCount: projectOutcomes.length,
+        CompletedProjectCount: projectOutcomes.filter((project) => project.Completed).length,
+        Results: allResults,
+        Projects: projectOutcomes,
+        ExecutionErrors: executionErrors,
+        ReportErrors: allReportErrors
+    }, null, 2), true);
     task.publish("CANOE_EXECUTION_RESULT", summaryUri,
                  "CANoe execution result", "application/json");
+    summaryPublished = true;
 }
 
-export async function collectArtifacts() {
-    debug("collectArtifacts: starting");
+async function collectCurrentProjectArtifacts() {
+    if (activeProject === null || activeProject.ReportsCollected) {
+        return;
+    }
+    debug(`collectCurrentProjectArtifacts: starting (${activeProject.Configuration})`);
     if (testStarted && !executionCompleted) {
-        executionFailureMessage = "CANoe execution was interrupted before all test cases completed";
+        if (executionFailureMessage === "") {
+            executionFailureMessage =
+                "CANoe execution was interrupted before all test cases completed";
+        }
         try {
             if (activeTestTarget !== null) {
                 activeTestTarget.call("Stop");
@@ -1587,50 +1771,54 @@ export async function collectArtifacts() {
             }
             recordCompletedResults(collectVerdicts());
         } catch (error) {
+            throwIfAutomationDisconnected(error);
             addReportError(`Unable to finalize interrupted CANoe execution: ${errorMessage(error)}`);
         }
     }
-    // 先落盘摘要，即使报告生成自身再次超时也保留部分用例结果。
-    publishExecutionSummary();
     if (testStarted) {
         try {
-            await generateSelectedReports();
+            await generateSelectedReports({ignoreCancellation: task.isCancelled()});
         } catch (error) {
+            throwIfAutomationDisconnected(error);
+            if (task.isCancelled()) {
+                throw error;
+            }
             addReportError(`CANoe report generation failed: ${errorMessage(error)}`);
         }
+    } else {
+        debug("collectCurrentProjectArtifacts: test did not start; no report is expected");
     }
     publishSelectedReports();
-    const paths = Array.isArray(projectDescriptor && projectDescriptor.Artifacts)
-        ? projectDescriptor.Artifacts.slice() : [];
-    for (const path of paths) {
+    activeProject.ReportsCollected = true;
+    activeProject.ReportErrors = reportErrors.slice();
+    activeProject.Reports = generatedReports.map((report) => ({
+        Type: report.type,
+        Uri: report.uri
+    }));
+    updateProjectOutcome();
+    debug(`collectCurrentProjectArtifacts: completed (reports=${generatedReports.length})`);
+}
+
+export async function collectArtifacts() {
+    debug("collectArtifacts: starting");
+    if (activeProject !== null && !activeProject.ReportsCollected) {
         try {
-            const relative = requireSafeRelativePath(path, "Artifacts entry");
-            const source = `${projectRootUri}/${relative}`;
-            if (!fs.exists(source)) {
-                task.warning(`CANoe test artifact is missing: ${relative}`);
-                continue;
-            }
-            publishArtifact(source,
-                            relative,
-                            `ARTIFACT:${relative}`,
-                            relative.toLowerCase().endsWith(".json")
-                                ? "application/json" : "application/octet-stream");
+            await collectCurrentProjectArtifacts();
         } catch (error) {
-            task.warning(`Unable to publish CANoe test artifact: ${errorMessage(error)}`);
+            appendProjectExecutionError(`Final report collection failed: ${errorMessage(error)}`);
+            addReportError(errorMessage(error));
+            updateProjectOutcome();
+            task.warning(`Unable to collect final CANoe report: ${errorMessage(error)}`);
         }
     }
-    const failures = [];
-    if (executionFailureMessage !== "") {
-        failures.push(executionFailureMessage);
+    updateProjectOutcome();
+    try {
+        publishExecutionSummary();
+    } catch (error) {
+        task.warning(`Unable to publish CANoe execution summary: ${errorMessage(error)}`);
     }
-    failures.push(...reportErrors);
-    publishExecutionSummary();
-    if (failures.length > 0) {
-        task.progress(100);
-        throw new Error(failures.join("; "));
-    }
-    debug(`collectArtifacts: completed (reports=${generatedReports.length}, paths=${paths.length})`);
     task.progress(100);
+    debug(`collectArtifacts: completed (projects=${projectOutcomes.length})`);
 }
 
 export async function cleanup() {
@@ -1670,10 +1858,7 @@ export async function cleanup() {
         testUnits = null;
         communicationModules = [];
         activeCommunicationModules = [];
-        communicationScriptUris = [];
-        communicationModuleNames = [];
-        scriptUris = [];
-        requestedIds = [];
+        requestedTestCaseNames = [];
         results = [];
         reportTypes = [];
         generatedReports = [];
@@ -1682,13 +1867,17 @@ export async function cleanup() {
         reportFileTracker = new ReportFileTracker();
         publishedArtifactUris = [];
         testMode = "";
-        projectDescriptor = null;
         projectRootUri = "";
         configurationUri = "";
+        configurationPlans = [];
+        activeProject = null;
+        projectOutcomes = [];
+        summaryPublished = false;
+        currentReportPrefix = "";
+        publicationTypeCounts = {};
         expectedResultCount = 0;
         selectedTestCases = [];
         testStarted = false;
-        useProjectTestSetup = false;
         projectTestSetupReady = false;
         debug("cleanup: completed");
     }

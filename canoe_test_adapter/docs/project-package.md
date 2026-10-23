@@ -1,75 +1,88 @@
 # CANoe 测试工程包
 
-本文适用于当前 `canoe_test_adapter`。工程描述符使用 `ContractVersion: "1.0"`，
-支持 VTEST、通信测试和复用工程原生测试设置。完整执行细节见[执行说明](execution.md)。
+`CANOE_PROJECT` 是 ZIP 压缩包，可包含多个 CANoe `.cfg` 工程。适配器按工程计划
+顺序打开配置、运行测试，并在切换到下一工程前收集当前工程报告。
 
-## 工程布局与描述符
+## 工程发现顺序
 
-ZIP 可包含一层工程目录。脚本优先查找根目录或子目录中的 `canoe-project.json`，
-以描述符所在目录作为工程根；未找到描述符时，递归查找唯一 `.cfg`，并使用该工程
-已有的测试设置。存在多个 `.cfg` 且无描述符时无法确定入口，会在准备阶段失败。
+任务可选提供 `TEST_CASES` JSON 文件。提供后只执行该文件列出的配置和测试用例，
+配置顺序与文件中首次出现的顺序一致。同一配置可以重复出现，适配器会合并它们的
+用例名称。
+
+未提供 `TEST_CASES` 时，适配器在压缩包中查找唯一的 `canoe.json`：
+
+- 找到时，筛选 `CanoeVersion` 小于或等于设备 `CANOE_VERSION` 的版本组，取其中最高版本；
+- 版本组内的 `Configuration` 按 JSON 数组顺序执行；
+- 找不到兼容版本组时，在开始 CANoe 执行前报错。
+
+没有 `canoe.json` 时，递归发现压缩包中的全部 `.cfg`，按相对路径排序后执行。
+路径比较不区分大小写；大小写相同的路径以原始字符串顺序作为次级排序条件。
+
+`canoe.json` 中的配置路径相对于该 JSON 文件所在目录。路径必须指向压缩包内存在的
+`.cfg` 文件，并使用 `/` 分隔；不允许绝对路径、盘符、反斜杠、空路径段、`.` 或 `..`。
 
 ```text
 canoe-project.zip
+├── canoe.json
 └── project/
-    ├── canoe-project.json
-    ├── configuration.cfg
-    ├── tests/
-    │   └── sample.vtuexe
-    └── report/
+    ├── flash1.cfg
+    ├── flash2.cfg
+    └── flash3.cfg
 ```
-
-VTEST 描述符示例：
 
 ```json
-{
-  "ContractVersion": "1.0",
-  "Configuration": "configuration.cfg",
-  "TestScripts": ["tests/sample.vtuexe"],
-  "TestConfiguration": "CICT Test Configuration",
-  "Artifacts": []
-}
+[
+  {
+    "Configuration": ["project/flash1.cfg", "project/flash2.cfg"],
+    "CanoeVersion": "18"
+  },
+  {
+    "Configuration": ["project/flash1.cfg", "project/flash2.cfg", "project/flash3.cfg"],
+    "CanoeVersion": "19"
+  }
+]
 ```
 
-通信测试可将 `TestScripts` 改为 `.tse` / `.xml` 测试文件。
-同一描述符不能混合 VTEST 与通信脚本。脚本条目也可使用带 `Path`、可选 `Type`
-和 `Name` 的对象；`Scripts` 是 `TestScripts` 的备用字段名。
-省略脚本列表或使用空数组时，适配器优先检测工程中的 `TestEnvironment`，再检测
-`TestConfiguration`，复用已有配置。
+例如设备配置 CANoe 19 时选择版本 19 组；设备配置 CANoe 18 时选择版本 18 组；
+设备配置 CANoe 17 时不选择上述清单并报不兼容错误。每个 `.cfg` 文件头还会独立核验，
+其主版本必须小于或等于设备版本。
 
-所有 `Configuration`、测试脚本和 `Artifacts` 路径均相对描述符目录，使用 `/`；
-禁止绝对路径、盘符、反斜杠、空路径段、`.` 和 `..`。
-工程 `.cfg` 文件头的主版本不得高于设备属性 `CANOE_VERSION`。
+## 指定测试用例
 
-| 字段 | 约束与用途 |
-| --- | --- |
-| `ContractVersion` | 必填，`"1.0"` |
-| `Configuration` | 描述符模式必填，工程内 `.cfg` 相对路径 |
-| `TestScripts` | 可选；测试文件数组，缺省时复用工程配置 |
-| `TestConfiguration` | VTEST 配置名，默认 `CICT Test Configuration` |
-| `TestCaseIds` | 可选；外部用例输入为空时使用的 ID 数组 |
-| `Artifacts` | 可选；额外发布的相对文件路径，缺失文件告警 |
-
-各项等待与报告超时参数见[执行说明的工程字段表](execution.md)。
-
-## 用例筛选
-
-`TEST_CASE_IDS` 可选，支持 `.json` / `.txt` 文件。文本按换行、逗号或分号拆分；
-JSON 支持字符串数组，以及包含 `ids`、`testCaseIds`、`TestCaseIds` 或 `cases`
-数组的对象。例如：
+用例文件是 UTF-8 JSON 数组，字段名区分大小写。`Configuration` 是相对于压缩包根目录
+的 `.cfg` 路径，`TestCaseNames` 是 CANoe 中测试用例的名称数组：
 
 ```json
-["TG0_TC1_SC01", "TG0_TC1_SC02"]
+[
+  {
+    "Configuration": "project/flash1.cfg",
+    "TestCaseNames": ["C01CASE", "C02CASE"]
+  },
+  {
+    "Configuration": "project/flash2.cfg",
+    "TestCaseNames": ["C012CASE"]
+  }
+]
 ```
 
-外部输入为空时使用描述符的 `TestCaseIds`；仍为空则执行发现到的全部用例。
-配置阶段禁用未匹配的用例，没有匹配项时失败。
+在 GUI 或 TUI 的 `TEST_CASES` 文件输入中选择上述 JSON 文件，无需手填名称列表。
+平台任务通过 `CANOE_TEST_CASES_JSON` 工程包类型提供该文件。
 
-## 实例与报告
+同一工程的多个用例放入同一个 `TestCaseNames` 数组。每个名称必须匹配 CANoe 工程中的
+测试用例名称；未找到名称时该工程记为失败并继续后续工程。`TEST_CASES` 与压缩包中的
+`canoe.json` 同时存在时，`TEST_CASES` 中列出的配置和用例优先作为执行清单。
 
-`NEW_CANOE_WHEN_START` 决定新建还是附加 CANoe。版本、安装目录发现与实例
-所有权见[执行说明](execution.md)，维护新版本见[版本支持指南](version-support.md)。
+如果省略 `TEST_CASES`，适配器复用每个 `.cfg` 中现有的 `TestConfiguration` 或
+`TestEnvironment`，执行其中启用的测试用例。
 
-`CANOE_REPORT_TYPE` 为必填多选，ID 精确使用 `vtestreport`、`XML`、`HTML`、`PDF`。
-适配器总会记录汇总结果，报告收集位于 `post.always` 的清理之前；具体格式、发布 ID
-和失败时的部分产物规则见执行说明。GUI 与 TUI 使用同一工程输入和报告选择契约。
+## 报告和结果
+
+`CANOE_REPORT_TYPE` 是必填多选项，至少选择 `vtestreport`、`XML`、`HTML`、`PDF` 中的一种。
+每个工程结束后，适配器生成并发布该工程所选的报告。产物位于
+`artifact://canoe-test/reports/<工程序号和配置名>/`，避免不同工程的同名报告互相覆盖。
+最终汇总文件为 `artifact://canoe-test/execution-result.json`，包含各工程状态、用例结果、
+报告错误和已发布产物。
+
+`NEW_CANOE_WHEN_START` 决定启动新 CANoe 进程或附加现有进程。版本和实例所有权见
+[执行说明](execution.md)，支持版本见[版本指南](version-support.md)。GUI 与 TUI 共用相同
+的工程和用例文件契约。

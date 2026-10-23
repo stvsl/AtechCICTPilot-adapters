@@ -8,8 +8,9 @@
 
 1. 在 `PackageInfo.json` 的 `CANOE_VERSION.values` 中加入新主版本。
 2. 更新 `scripts/canoe_flash/session.js` 的 `SUPPORTED_CANOE_VERSIONS`。
-3. 核对权限 `CANOE_EXECUTABLE` 的安装发现：产品名模板为 `Vector CANoe {version}`，
-   相对路径为 `Exec64/CANoe64.exe`，发现失败后使用 `CANOE_INSTALL_DIR`。
+3. 核对权限 `CANOE_EXECUTABLE` 和 `CANOE_COM_REGISTRAR` 的安装发现：产品名模板为
+   `Vector CANoe {version}`，相对路径分别为 `Exec64/CANoe64.exe` 和
+   `Exec64/RegisterComponents.exe`，发现失败后都使用 `CANOE_INSTALL_DIR`。
 4. 同步本插件 [README](../README.md) 和本说明，按发布策略调整包版本。
 5. 更新 `test/plugin_compiler_test.py`、`test/runtime_interface_test.cpp` 中刷写插件
    的版本集合、数量、顺序、安装发现与包版本断言。
@@ -22,6 +23,8 @@
 
 COM ProgID 使用 `CANoe.Application`，不拼接主版本。连接后的
 `Application.Version` 必须等于 `CANOE_VERSION`。
+启动新实例时会在启动前核对 `LocalServer32`；不匹配则提权运行目标安装的注册工具，
+并在复核成功后继续。附加已有实例时不修改注册，成功切换后也不恢复旧注册。
 工程 `.cfg` 的主版本可以低于或等于该设备属性，不能高于它；检查在复制固件、修改
 系统变量、启动 CANoe 之前执行。
 
@@ -38,5 +41,6 @@ ctest --preset=dev-fast -R 'AtechCICTPilot_(plugin_compiler|canoe_project_versio
 ```
 
 覆盖新主版本的同版本工程、向下加载、更高版本拒绝、实际实例版本不匹配，以及
-失败后清理仍执行。真实 Windows 工位还需验证多版本共存时的可执行文件选择、
-工程系统变量、刷写模块、报告版本提取和任务退出后的进程回收。GUI 效果交由用户验证。
+失败后清理仍执行。真实 Windows 工位还需验证多版本共存时的可执行文件选择与 COM
+注册切换、UAC 取消和注册失败、工程系统变量、刷写模块、报告版本提取和任务退出后的
+进程回收。GUI 效果交由用户验证。
