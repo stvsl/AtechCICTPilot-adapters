@@ -16,8 +16,16 @@ cmake --build --preset=dev-fast --target plugin_atech_bootload_adapter
 ```
 
 在 GUI 或 TUI 的适配器管理中导入并启用生成的包，设置设备属性 `CLI_PATH`，
-再创建离线刷写任务。必填输入为配置 ZIP `CONFIG_PACKAGE` 和 Application HEX
-`APP_FILE`；Flash Driver 与 Calibration HEX 可选。
+再创建离线刷写任务。必填输入为配置 ZIP `CONFIG_PACKAGE` 和 Application 固件
+`APP_FILE`（至少一个文件）；Calibration 可选择多个文件或留空，Flash Driver
+仍为可选的单个文件。GUI 支持多选追加，TUI 每行一个路径，按选择顺序传入 CLI。
+三类固件均支持
+`.hex`、`.vbf`、`.s19`、`.mot`、`.sre`、`.mbf`、`.srec`，扩展名不区分大小写。
+
+修复版 **1.0.1** 支持 UTF-8 与 Windows 本地代码页输出；客户端需提供
+`cli.decodeText()` 解码接口，更新客户端后还须导入并启用新插件包。
+进度识别不依赖中文标签，方块或标签已被替换成问号、乱码时也能更新百分比；
+没有尾部换行的完整进度帧立即上报。可读日志统一保存为 UTF-8，原始字节另存为 `.raw`。
 
 ## 文档与维护
 

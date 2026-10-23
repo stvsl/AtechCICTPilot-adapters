@@ -8,7 +8,7 @@
 - 本次实现离线刷写和客户端进度展示，GUI 与 TUI 使用同一后端。
 - 插件设备配置只保留一个文件选择框，选择 `ATECH BootLoad CLI.exe`。
 - 配置输入是真实 ZIP 压缩包，内部只放一份 YAML 配置。
-- Application 必选，Flash Driver、Calibration 可选，三类固件均仅接受 `.hex` 文件。
+- Application 必选，Flash Driver、Calibration 可选，三类固件均接受 `.hex`、`.vbf`、`.s19`、`.mot`、`.sre`、`.mbf`、`.srec` 文件。
 - 开发第一步完成 CAN、DoIP 两份 YAML 配置文件及配置 ZIP 示例，再实现配置解析。
 - 复用现有 `src/adapter/atech_bootload_adapter/`，插件 ID 为
   `atech_bootload_adapter`。
@@ -106,7 +106,7 @@ public event Action<int> Progress;
 | `version` | DoIP | 协议版本，十六进制，默认使用项目配置 |
 | `route-timeout` | DoIP | 路由激活超时，默认 2000 毫秒 |
 
-本次插件的三类固件输入均仅支持 `.hex`，文件选择筛选和执行前校验保持一致。
+本次插件的三类固件输入均支持 `.hex`、`.vbf`、`.s19`、`.mot`、`.sre`、`.mbf`、`.srec`，文件选择筛选和执行前校验保持一致。
 CLI 直接读取固件文件，三类固件无需解压。
 
 CLI 对 `force`、`fd`、`verbose` 使用“参数是否存在”判断。
@@ -132,9 +132,9 @@ Geely_ZCUP_SS21_V01
 | 属性 ID | 输入 | 必填 |
 | --- | --- | --- |
 | `CONFIG_PACKAGE` | 仅包含一份 YAML 的 ZIP | 是 |
-| `APP_FILE` | Application `.hex` 固件文件 | 是 |
-| `FLASH_DRIVER` | Flash Driver `.hex` 固件文件 | 否 |
-| `CALIBRATION` | Calibration `.hex` 固件文件 | 否 |
+| `APP_FILE` | Application `.hex`、`.vbf`、`.s19`、`.mot`、`.sre`、`.mbf`、`.srec` 固件文件 | 是 |
+| `FLASH_DRIVER` | Flash Driver `.hex`、`.vbf`、`.s19`、`.mot`、`.sre`、`.mbf`、`.srec` 固件文件 | 否 |
+| `CALIBRATION` | Calibration `.hex`、`.vbf`、`.s19`、`.mot`、`.sre`、`.mbf`、`.srec` 固件文件 | 否 |
 
 建议不限定 YAML 文件名，在解压目录中查找唯一的 `.yaml` 或 `.yml` 文件。
 缺失或存在多份配置时明确报错。
@@ -216,7 +216,7 @@ stall-timeout: 60
 
 | 顺序 | 工作内容 | 主要代码落点 | 完成条件 |
 | --- | --- | --- | --- |
-| 1 | 完成 YAML 配置文件、配置 ZIP 示例及插件输入约定 | CAN / DoIP YAML 模板、样例 ZIP、`src/adapter/atech_bootload_adapter/PackageInfo.json` | 两份 YAML 文件和各自仅含一份配置的 ZIP 示例已完成；GUI、TUI 生成一个 EXE 配置项和四个离线输入，三类固件均仅接受 `.hex` |
+| 1 | 完成 YAML 配置文件、配置 ZIP 示例及插件输入约定 | CAN / DoIP YAML 模板、样例 ZIP、`src/adapter/atech_bootload_adapter/PackageInfo.json` | 两份 YAML 文件和各自仅含一份配置的 ZIP 示例已完成；GUI、TUI 生成一个 EXE 配置项和四个离线输入，三类固件均接受 `.hex`、`.vbf`、`.s19`、`.mot`、`.sre`、`.mbf`、`.srec` |
 | 2 | 实现 YAML 解析和参数生成 | 插件 `scripts/bootload/config.js` 及随插件打包的 YAML 依赖 | 按第一步已完成的配置文件实现解析；两种模式均能生成准确的参数数组，错误配置在启动进程前失败 |
 | 3 | 实现刷写进程生命周期 | 插件 `scripts/entry.js`、`scripts/bootload/runner.js`、`StepConfig.groovy` | 正确启动、采集、结算、取消、超时及释放进程；所有终结路径均保存诊断 |
 | 4 | 打通阶段进度快照 | `TaskService`、`TaskManager`、`TaskExecutionView`、`TaskStageListModel` | 进度按节点、阶段及清理标识正确归属；终态保留该阶段的最终进度 |
@@ -234,7 +234,7 @@ YAML 文件与配置 ZIP 示例在本步骤完成，作为第二步解析模块�
 
 保留 `CLI_PATH`、`CONFIG_PACKAGE`、`APP_FILE`、`FLASH_DRIVER`、`CALIBRATION`
 五个现有属性 ID，完善中英文名称与文件筛选。Application 必选，Flash Driver、
-Calibration 可选，三类固件筛选均为 `*.hex`，执行前也校验文件扩展名。
+Calibration 可选，三类固件筛选支持 `.hex`、`.vbf`、`.s19`、`.mot`、`.sre`、`.mbf`、`.srec`，执行前也校验文件扩展名。
 为 CLI 权限增加明确的可执行文件 ID，供脚本使用 `cli.resolveExecutable()` 解析。
 普通刷写使用管道采集输出，`AllowTerminal` 设置为 `false`。
 
@@ -303,7 +303,7 @@ GUI 视觉验收由用户完成；真实 CAN / DoIP 工位联调分别核对连�
 ## 实现验证计划
 
 - 第一步完成的 CAN / DoIP YAML 文件及各自配置 ZIP 可作为有效输入使用。
-- 插件编译、打包及清单校验；设备配置一项、离线输入四项，三类固件仅接受 `.hex`，
+- 插件编译、打包及清单校验；设备配置一项、离线输入四项，三类固件接受 `.hex`、`.vbf`、`.s19`、`.mot`、`.sre`、`.mbf`、`.srec`，
   文件选择筛选和执行前校验一致。
 - CAN / DoIP 参数映射，布尔开关，十六进制前导零，中文、空格和括号路径。
 - ZIP 缺失配置、多份配置及非法 YAML；模式冲突和非法字段在启动前失败。
@@ -350,3 +350,45 @@ Windows 下部分 QtTest 运行不输出标准流，刷写测试入口改为读�
 
 GUI 视觉效果未进行自动检查；真实 ECU 的 CAN / DoIP 连接、固件内容和实际刷写结果
 仍需在工位由用户验收。受控夹具通过不代表已完成真实设备刷写。
+
+## 2026-10-21 Windows 输出修正
+
+工位提供的任务日志表明，CLI 在执行期间已持续输出 `0.0%` 至 `100.0%`，
+但没有形成任务进度事件，最终阶段记录的 `progress` 为 `-1`。中文乱码符合
+CP936 原始字节被固定按 UTF-8 解码的特征；空白方块在本地代码页中还可能直接
+退化为问号，导致原先严格要求 50 个 `█` / `░` 的解析规则完全失配。
+
+此前修正按字节缓冲整行，调用宿主 `cli.decodeText()` 优先解码合法 UTF-8，
+否则使用系统本地代码页。当时的进度识别保留方括号、`进度` 标签和行尾百分比约束，
+不再要求方块字符精确匹配。原始输出仍完整归档，GUI 与 TUI 接收同一任务进度。
+界面日志将进度行规范为 `刷写进度：12.0%`，避免继续显示工具已替换成问号的方块。
+
+回归夹具同时提供 UTF-8 和可表示中文的系统本地编码，逐字节输出，并模拟问号
+进度条。发送 `21%` 后阻塞等待测试确认，收到中间进度才允许继续退出，防止只在
+进程结束时集中解析也通过测试。Windows 工位真实刷写与 GUI 效果仍由用户验收。
+
+## 2026-10-21 客户日志复核与 1.0.1 修复
+
+客户提供的执行记录使用 `1.0.0+b8a097218a089b77`，脚本提示仍为
+“正在读取配置与 HEX 固件”，与当前源码的提示不同。记录中 CLI 在约 99 秒内
+持续打印 `0%、10%…100%`，但没有产生任务进度事件，主阶段最终 `progress` 为 `-1`。
+任务成功结束后调度器将节点置为 100%，形成界面从 0 直接跳到 100% 的现象。
+
+复核本次提供的 CLI 1.0.0.1：隐藏进程、管道重定向下 `help` 的中文使用 CP936；
+`ConsoleProgressRenderer` 会逐档调用 `Console.WriteLine`，没有结束后才统一输出的逻辑。
+客户日志中的中文替换字符符合 CP936 被当成 UTF-8 解码，进度标签也随之损坏。
+执行日志已经丢失的中文原始字节无法从替换字符恢复，需从后续任务的 `.raw` 核对。
+
+1.0.1 延续完整行解码，并补上以下行为：
+
+- 进度识别使用固定 50 格进度条的结构与行尾百分比，不依赖中文标签；允许编码损坏
+  使一格变为多个字符，拒绝普通 ASCII 日志、超范围百分比和附加错误文本。
+- 控制台进度帧一旦收到完整百分比便上报，不等下一次回车、换行或进程退出。
+- `.log` 统一写入 UTF-8，原始字节保留在 `.raw`；诊断包含实际插件版本、上报次数
+  和最后百分比，便于核对客户工位的安装包与运行结果。
+- Windows 专项回归读取 QtTest 的 UTF-8 XML 报告，逐项校验完成与通过状态，避免
+  本地代码页文本日志混入 UTF-8 失败消息后无法读取结果。
+
+受控回归覆盖 UTF-8、Windows 本地编码、客户日志形态的损坏标签与进度条、没有尾部
+换行的刷新帧、重复百分比、stderr 伪进度、非零退出、超时和取消。夹具在 21% 等待
+测试放行，只有确认执行期间已收到该进度才允许继续结束。真实 ECU 与 GUI 仍由用户验收。

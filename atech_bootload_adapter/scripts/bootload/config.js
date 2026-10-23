@@ -116,15 +116,26 @@ export function prepareConfiguration() {
     }
     const config = parseConfiguration(fs.readText(files[0].uri));
     for (const [input, option] of Object.entries(FIRMWARE)) {
-        const uri = requirement(input, input !== "APP_FILE");
-        if ((uri === "" || uri === null || uri === undefined) && input !== "APP_FILE") {
+        const value = requirement(input, input !== "APP_FILE");
+        if ((value === "" || value === null || value === undefined
+                || (Array.isArray(value) && value.length === 0))
+                && input !== "APP_FILE") {
             continue;
         }
-        if (typeof uri !== "string" || !/\.hex$/i.test(uri)
-                || fs.stat(uri).type !== "file") {
-            throw new Error(`${input} 必须是 .hex 固件文件`);
+        const multiple = input !== "FLASH_DRIVER";
+        if (multiple && (!Array.isArray(value) || value.length === 0)) {
+            throw new Error(`${input} 必须至少选择一个固件文件`);
         }
-        config[option] = fs.nativePath(uri);
+        const uris = multiple ? value : [value];
+        const paths = uris.map((uri) => {
+            if (typeof uri !== "string"
+                    || !/\.(?:hex|vbf|s19|mot|sre|mbf|srec)$/i.test(uri)
+                    || fs.stat(uri).type !== "file") {
+                throw new Error(`${input} 必须是 .hex、.vbf、.s19、.mot、.sre、.mbf 或 .srec 固件文件`);
+            }
+            return fs.nativePath(uri);
+        });
+        config[option] = multiple ? paths : paths[0];
     }
     fs.mkdir("artifact://bootload");
     fs.writeText("artifact://bootload/resolved.yaml", dump(config, {
@@ -140,12 +151,14 @@ export function commandArguments(config) {
     for (const key of [...COMMON, ...(config.mode === "can-download" ? CAN : DOIP),
         ...Object.values(FIRMWARE)]) {
         const value = config[key];
-        if (value === undefined || value === false) {
+        if (value === undefined || value === false
+                || (Array.isArray(value) && value.length === 0)) {
             continue;
         }
         result.push(`--${key}`);
         if (value !== true) {
-            result.push(String(value));
+            // 多文件选项只出现一次，各路径独立传参，保留选择顺序和路径内空格。
+            result.push(...(Array.isArray(value) ? value : [String(value)]));
         }
     }
     return result;

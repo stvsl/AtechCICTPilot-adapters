@@ -3,13 +3,20 @@
     "PackageId": "atech_bootload_adapter",
     "PackageNameCN": "埃泰克BootLoader刷写工具适配器",
     "PackageNameEN": "ATECH Bootloader Flash Tool Adapter",
-    "PackageVersion": "1.0.0",
+    "PackageVersion": "1.0.1",
     "DescriptionCN": "埃泰克BootLoader刷写工具",
     "DescriptionEN": "ATECH BootLoader Flash Tool",
     "Author": "DOTRUST",
     "NodeType": "Flash",
     "CapabilityNameCN": "埃泰克BootLoader刷写",
     "CapabilityNameEN": "ATECH Bootloader Flash",
+    "PlatformEngineeringInfo": [
+        {
+            "EngineeringPackageId": "ATECH_FLASH_PARAMETERS_PACKAGE",
+            "EngineeringPackageNameCN": "埃泰克UDS刷写参数包",
+            "EngineeringPackageNameEN": "ATECH UDS Flash Parameters"
+        }
+    ],
     "Runtime": {
         "ApiVersion": "1.0",
         "Language": "javascript"
@@ -36,31 +43,37 @@
             "nameEN": "ConfigParametersPackage",
             "type": "file",
             "required": true,
-            "fileExtension": ".zip"
+            "fileExtension": ".zip",
+            "platform": {
+                "type": "EngineeringPackage",
+                "tags": [
+                    "ATECH_FLASH_PARAMETERS_PACKAGE"
+                ]
+            }
         },
         {
             "id": "APP_FILE",
-            "nameCN": "Application 固件（.hex）",
-            "nameEN": "Application firmware (.hex)",
-            "type": "file",
+            "nameCN": "Application 固件",
+            "nameEN": "Application firmware",
+            "type": "file_multi",
             "required": true,
-            "fileExtension": ".hex"
+            "fileExtension": ".hex|.vbf|.s19|.mot|.sre|.mbf|.srec"
         },
         {
             "id": "FLASH_DRIVER",
-            "nameCN": "Flash Driver 固件（可选 .hex）",
-            "nameEN": "Flash Driver firmware (optional .hex)",
+            "nameCN": "Flash Driver 固件（可选）",
+            "nameEN": "Flash Driver firmware (optional)",
             "type": "file",
             "required": false,
-            "fileExtension": ".hex"
+            "fileExtension": ".hex|.vbf|.s19|.mot|.sre|.mbf|.srec"
         },
         {
             "id": "CALIBRATION",
-            "nameCN": "Calibration 固件（可选 .hex）",
-            "nameEN": "Calibration firmware (optional .hex)",
-            "type": "file",
+            "nameCN": "Calibration 固件（可选）",
+            "nameEN": "Calibration firmware (optional)",
+            "type": "file_multi",
             "required": false,
-            "fileExtension": ".hex"
+            "fileExtension": ".hex|.vbf|.s19|.mot|.sre|.mbf|.srec"
         }
     ],
     "OnDeviceProperty": [

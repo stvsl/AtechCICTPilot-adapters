@@ -7,7 +7,7 @@ import {executeCommand, cleanupProcess} from "./bootload/runner.js";
 export async function run() {
     fs.mkdir("artifact://bootload");
     try {
-        task.info("正在读取配置与 HEX 固件");
+        task.info("正在读取配置与固件");
         const config = prepareConfiguration();
         const executable = cli.resolveExecutable("bootload");
         const projects = await executeCommand(executable, ["list-projects"], "projects", 30000);

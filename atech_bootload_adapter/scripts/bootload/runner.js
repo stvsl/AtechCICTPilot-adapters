@@ -17,6 +17,7 @@ export async function executeCommand(executable, arguments_, id, timeoutMs,
     reportProgress = false) {
     const startedAt = Date.now();
     let lastProgress = -1;
+    let progressUpdates = 0;
     let result = null;
     let failure = "";
     let acceptProgress = reportProgress;
@@ -25,8 +26,11 @@ export async function executeCommand(executable, arguments_, id, timeoutMs,
         if (progress !== null && progress !== lastProgress) {
             lastProgress = progress;
             task.progress(progress);
+            progressUpdates++;
         }
-        task.info(line.substring(0, 4096));
+        // 原始进度条可能已被外部工具替换成问号；界面只显示清晰的实际百分比。
+        task.info(progress === null ? line.substring(0, 4096)
+            : `刷写进度：${progress.toFixed(1)}%`);
     });
     const stderr = new OutputCollector((line) => task.warning(line.substring(0, 4096)));
     const collect = () => {
@@ -35,8 +39,12 @@ export async function executeCommand(executable, arguments_, id, timeoutMs,
         stderr.read(output.standardError);
     };
     const save = () => {
-        fs.writeBytes(`artifact://bootload/${id}-stdout.log`, stdout.bytes());
-        fs.writeBytes(`artifact://bootload/${id}-stderr.log`, stderr.bytes());
+        for (const [name, collector] of [["stdout", stdout], ["stderr", stderr]]) {
+            const bytes = collector.bytes();
+            // 可读日志统一使用 UTF-8，原始字节另存，便于核对客户工位的输出编码。
+            fs.writeBytes(`artifact://bootload/${id}-${name}.raw`, bytes);
+            fs.writeText(`artifact://bootload/${id}-${name}.log`, cli.decodeText(bytes));
+        }
     };
     const finalize = (allowProgress, interruption = "") => {
         acceptProgress = allowProgress;
@@ -49,7 +57,8 @@ export async function executeCommand(executable, arguments_, id, timeoutMs,
             stderr.finish();
             save();
             const diagnostic = {executable, arguments: arguments_,
-                startedAt, durationMs: Date.now() - startedAt, lastProgress,
+                adapterVersion: JSON.parse(fs.readText("plugin://PackageInfo.json")).PackageVersion,
+                startedAt, durationMs: Date.now() - startedAt, lastProgress, progressUpdates,
                 result: result && {exitCode: result.exitCode, crashed: result.crashed},
                 failure: failure || interruption};
             fs.writeText(`artifact://bootload/${id}-diagnostic.json`,
@@ -59,7 +68,12 @@ export async function executeCommand(executable, arguments_, id, timeoutMs,
                 task.publish(`BOOTLOAD_${id}_${stream}`,
                     `artifact://bootload/${id}-${stream}.${extension}`,
                     `${id} ${stream}`, stream === "diagnostic"
-                        ? "application/json" : "text/plain");
+                        ? "application/json" : "text/plain; charset=utf-8");
+            }
+            for (const stream of ["stdout", "stderr"]) {
+                task.publish(`BOOTLOAD_${id}_${stream}_raw`,
+                    `artifact://bootload/${id}-${stream}.raw`,
+                    `${id} ${stream} 原始字节`, "application/octet-stream");
             }
         } finally {
             if (activeProcess !== null) {
