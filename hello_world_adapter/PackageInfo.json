@@ -89,6 +89,29 @@
                 "type": "Original",
                 "tags": []
             }
+        },
+        {
+            "id": "TEST_REPORT_TYPE",
+            "nameCN": "测试报告类型",
+            "nameEN": "Test Report Type",
+            "type": "enum_multi",
+            "values": [
+                {
+                    "id": "json",
+                    "nameCN": "JSON",
+                    "nameEN": "JSON"
+                },
+                {
+                    "id": "xml",
+                    "nameCN": "XML",
+                    "nameEN": "XML"
+                }
+            ],
+            "required": true,
+            "platform": {
+                "type": "Original",
+                "tags": []
+            }
         }
     ],
     "OnDeviceProperty": []
