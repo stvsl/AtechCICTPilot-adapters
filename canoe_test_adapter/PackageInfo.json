@@ -23,8 +23,8 @@
         },
         {
             "EngineeringPackageId": "CANOE_TEST_CASES_JSON",
-            "EngineeringPackageNameCN": "CANoe 测试用例 JSON",
-            "EngineeringPackageNameEN": "CANoe Test Case JSON"
+            "EngineeringPackageNameCN": "CANoe 测试用例配置",
+            "EngineeringPackageNameEN": "CANoe Test Case Configuration"
         }
     ],
     "Runtime": {
@@ -105,10 +105,10 @@
         },
         {
             "id": "TEST_CASES",
-            "nameCN": "测试用例名称配置 JSON",
-            "nameEN": "Test Case Name Configuration JSON",
+            "nameCN": "测试用例名称配置",
+            "nameEN": "Test Case Name Configuration",
             "type": "file",
-            "fileExtension": ".json",
+            "fileExtension": ".json|.txt",
             "required": false,
             "platform": {
                 "type": "EngineeringPackage",

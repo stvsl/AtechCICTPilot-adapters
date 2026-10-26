@@ -197,19 +197,32 @@ function findCanoeManifest(entries) {
     return manifests.length === 1 ? manifests[0] : null;
 }
 
-function safeReportPrefix(index, configuration) {
-    const path = String(configuration).replace(/\\/g, "/");
-    const stem = path.substring(path.lastIndexOf("/") + 1)
-        .replace(/\.cfg$/i, "");
-    const normalized = stem.replace(/[^A-Za-z0-9._-]+/g, "-")
-        .replace(/^-+|-+$/g, "");
-    return `project-${String(index + 1).padStart(3, "0")}-${normalized || "canoe"}`;
+function assignReportPrefixes(plans) {
+    // 保留配置原名；Windows 目录不接受末尾的点或空格，空名使用固定回退。
+    const stems = plans.map((plan) => baseName(plan.configuration)
+        .replace(/\.cfg$/i, "").replace(/[. ]+$/g, "") || "canoe");
+    const reserved = new Set(stems.map((stem) => stem.toLowerCase()));
+    const occupied = new Set();
+    return plans.map((plan, index) => {
+        const stem = stems[index];
+        let prefix = stem;
+        if (occupied.has(prefix.toLowerCase())) {
+            let sequence = 2;
+            // 重名时追加编号，并跳过其他配置原本使用的名称。
+            do {
+                prefix = `${stem}-${sequence++}`;
+            } while (occupied.has(prefix.toLowerCase())
+                || reserved.has(prefix.toLowerCase()));
+        }
+        occupied.add(prefix.toLowerCase());
+        return {...plan, reportPrefix: prefix};
+    });
 }
 
 function buildConfigurationPlans(extractionRootUri, testCaseUri) {
     const extractedFiles = archiveFiles(extractionRootUri);
     const testCasePlans = testCaseUri
-        ? parseTestCaseConfiguration(fs.readText(testCaseUri)) : null;
+        ? parseTestCaseConfiguration(fs.readText(testCaseUri), testCaseUri) : null;
     const manifest = testCasePlans === null
         ? findCanoeManifest(extractedFiles) : null;
     let rootUri = extractionRootUri;
@@ -1280,7 +1293,7 @@ export async function prepare(projectPackage) {
     const plan = buildConfigurationPlans(
         projectRootUri, optionalRequirement("TEST_CASES"));
     projectRootUri = plan.rootUri;
-    configurationPlans = plan.plans;
+    configurationPlans = assignReportPrefixes(plan.plans);
     testMode = "project";
     if (configurationPlans.length > 990) {
         throw new Error("CANOE_PROJECT contains too many .cfg files for dynamic stages");
@@ -1340,7 +1353,7 @@ function prepareProjectExecution(index) {
         throw new Error("Dynamic CANoe project stage refers to an unknown configuration");
     }
     configurationUri = `${projectRootUri}/${plan.configuration}`;
-    currentReportPrefix = safeReportPrefix(index, plan.configuration);
+    currentReportPrefix = plan.reportPrefix;
     requestedTestCaseNames = plan.testCaseNames.slice();
     communicationModules = [];
     activeCommunicationModules = [];
@@ -1682,7 +1695,7 @@ export function reportPublicationId(type, count) {
         ? `CANOE_REPORT:${type}` : `CANOE_REPORT:${type}:${count}`;
 }
 
-function publishArtifact(source, relative, publicationId, mediaType) {
+function publishArtifact(source, relative, publicationId, mediaType, group) {
     const destination = `artifact://canoe-test/${relative}`;
     if (publishedArtifactUris.includes(destination)) {
         if (activeProject !== null
@@ -1692,7 +1705,8 @@ function publishArtifact(source, relative, publicationId, mediaType) {
         return false;
     }
     fs.copy(source, destination, true);
-    task.publish(publicationId, destination, baseName(relative), mediaType);
+    task.publish(publicationId, destination, baseName(relative), mediaType,
+                 group);
     publishedArtifactUris.push(destination);
     if (activeProject !== null) {
         activeProject.Artifacts.push(destination);
@@ -1712,8 +1726,10 @@ function publishSelectedReports() {
             const relative = `reports/${currentReportPrefix}/${sourceRelative}`;
             const count = (publicationTypeCounts[report.type] || 0) + 1;
             const publicationId = reportPublicationId(report.type, count);
+            // 分组路径固定为「工程/报告类型」，界面据此逐级归类产物。
+            const group = `${currentReportPrefix}/${String(report.type).toLowerCase()}`;
             if (publishArtifact(report.uri, relative, publicationId,
-                                reportMediaType(report.type))) {
+                                reportMediaType(report.type), group)) {
                 publicationTypeCounts[report.type] = count;
             }
         } catch (error) {
@@ -1750,7 +1766,7 @@ function publishExecutionSummary() {
         ReportErrors: allReportErrors
     }, null, 2), true);
     task.publish("CANOE_EXECUTION_RESULT", summaryUri,
-                 "CANoe execution result", "application/json");
+                 "CANoe execution result", "application/json", "");
     summaryPublished = true;
 }
 

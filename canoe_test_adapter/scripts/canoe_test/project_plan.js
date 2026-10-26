@@ -34,10 +34,29 @@ export function sortConfigurationPaths(paths) {
         .sort(comparePath);
 }
 
-export function parseTestCaseConfiguration(text) {
+function appendTestCasePlan(plans, byConfiguration, configuration, rawNames, field) {
+    const key = configuration.toLowerCase();
+    let plan = byConfiguration.get(key);
+    if (plan === undefined) {
+        plan = {configuration, testCaseNames: []};
+        byConfiguration.set(key, plan);
+        plans.push(plan);
+    }
+    for (const rawName of rawNames) {
+        if (typeof rawName !== "string" || rawName.trim() === "") {
+            throw new Error(field + " entries must be non-empty strings");
+        }
+        const name = rawName.trim();
+        if (!plan.testCaseNames.includes(name)) {
+            plan.testCaseNames.push(name);
+        }
+    }
+}
+
+function parseJsonTestCaseConfiguration(text) {
     let entries;
     try {
-        entries = JSON.parse(String(text));
+        entries = JSON.parse(text);
     } catch (error) {
         throw new Error("TEST_CASES is not valid JSON: " + error.message);
     }
@@ -58,25 +77,65 @@ export function parseTestCaseConfiguration(text) {
             throw new Error("TEST_CASES[" + index
                 + "].TestCaseNames must be a non-empty array");
         }
-        const key = configuration.toLowerCase();
-        let plan = byConfiguration.get(key);
-        if (plan === undefined) {
-            plan = {configuration, testCaseNames: []};
-            byConfiguration.set(key, plan);
-            plans.push(plan);
-        }
-        for (const rawName of entry.TestCaseNames) {
-            if (typeof rawName !== "string" || rawName.trim() === "") {
-                throw new Error("TEST_CASES[" + index
-                    + "].TestCaseNames entries must be non-empty strings");
-            }
-            const name = rawName.trim();
-            if (!plan.testCaseNames.includes(name)) {
-                plan.testCaseNames.push(name);
-            }
-        }
+        appendTestCasePlan(plans, byConfiguration, configuration,
+            entry.TestCaseNames, "TEST_CASES[" + index + "].TestCaseNames");
     });
     return plans;
+}
+
+function parseTextTestCaseConfiguration(text) {
+    const plans = [];
+    const byConfiguration = new Map();
+    // 文本格式每行描述一个工程及其测试用例：<相对 .cfg 路径>:<用例>[,<用例>...]。
+    String(text).split(/\r?\n/).forEach((rawLine, index) => {
+        const lineNumber = index + 1;
+        const line = rawLine.trim();
+        if (line === "") {
+            return;
+        }
+        const separator = line.indexOf(":");
+        if (separator <= 0) {
+            throw new Error("TEST_CASES line " + lineNumber
+                + " must use <configuration>.cfg:<case>[,<case>...]");
+        }
+        const configuration = safeRelativeConfigurationPath(
+            line.substring(0, separator).trim(),
+            "TEST_CASES line " + lineNumber + " configuration");
+        const namesText = line.substring(separator + 1).trim();
+        if (namesText === "") {
+            throw new Error("TEST_CASES line " + lineNumber
+                + " must list at least one test case name");
+        }
+        appendTestCasePlan(plans, byConfiguration, configuration,
+            namesText.split(","), "TEST_CASES line " + lineNumber + " test cases");
+    });
+    if (plans.length === 0) {
+        throw new Error("TEST_CASES must contain at least one configuration and test case");
+    }
+    return plans;
+}
+
+/**
+ * 解析测试用例名称配置，兼容两种输入格式。
+ *
+ * - JSON（`.json`）：对象数组，字段为 `Configuration` 与 `TestCaseNames`。
+ * - 文本（`.txt`）：每行 `<相对 .cfg 路径>:<用例>[,<用例>...]`，空行忽略。
+ *
+ * 相同配置（不区分大小写）会合并用例名称，并按首次出现顺序只执行一次。
+ * 无法从文件名判断格式时，以首个非空字符是否为 `[` 区分 JSON 与文本。
+ */
+export function parseTestCaseConfiguration(text, sourceName = "") {
+    const content = String(text === undefined || text === null ? "" : text)
+        .replace(/^\uFEFF/, "");
+    if (content.trim() === "") {
+        throw new Error("TEST_CASES is empty");
+    }
+    const source = String(sourceName === undefined || sourceName === null
+        ? "" : sourceName).trim().toLowerCase();
+    const isJson = source.endsWith(".json")
+        || (!source.endsWith(".txt") && content.trim().startsWith("["));
+    return isJson
+        ? parseJsonTestCaseConfiguration(content) : parseTextTestCaseConfiguration(content);
 }
 
 export function selectCompatibleConfigurations(manifest, systemVersion) {

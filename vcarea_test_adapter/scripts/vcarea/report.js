@@ -168,7 +168,8 @@ function extractLegacyFormats(zipUri, index, requestedTypes) {
                 `VCAREA_REPORT:${format}:${index}`,
                 artifactUri,
                 `VCarEA 测试报告 ${index}（${format}）`,
-                REPORT_MEDIA_TYPES[format] || "application/octet-stream");
+                REPORT_MEDIA_TYPES[format] || "application/octet-stream",
+                `报告 ${index}/${format}`);
             extracted.push({
                 Type: format,
                 ArtifactUri: artifactUri,
@@ -282,7 +283,8 @@ export function downloadReport(reportPath, reportIndex, requestedTypes = []) {
             `VCAREA_REPORT:zip:${index}`,
             artifactUri,
             `VCarEA 测试报告 ${index}`,
-            "application/zip");
+            "application/zip",
+            `报告 ${index}/zip`);
         task.info(`已下载 VCarEA ZIP 报告（${report.length} 字节）`);
         const extracted = extractLegacyFormats(
             artifactUri, index, requestedTypes);

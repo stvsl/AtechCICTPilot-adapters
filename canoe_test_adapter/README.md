@@ -23,8 +23,10 @@ cmake --build --preset=dev-fast --target plugin_canoe_test_adapter
 
 在 GUI 或 TUI 中导入并启用生成的插件，配置 `CANOE_VERSION` 和
 `NEW_CANOE_WHEN_START`。任务需提供 `CANOE_PROJECT` ZIP，并在 `CANOE_REPORT_TYPE`
-中至少选择一种报告格式。需要筛选用例时加载 `TEST_CASES` JSON 文件。
+中至少选择一种报告格式。需要筛选用例时加载 `TEST_CASES` 测试用例名称配置文件
+（`.json` 或 `.txt`）。
 
-工程规划规则、`canoe.json` 格式和用例 JSON 示例见[工程包说明](docs/project-package.md)。
+工程规划规则、`canoe.json` 格式以及 JSON / 文本两种用例文件示例见
+[工程包说明](docs/project-package.md)。
 逐工程动态阶段、报告处理、失败和清理行为见[执行说明](docs/execution.md)。
 版本维护见[版本指南](docs/version-support.md)。

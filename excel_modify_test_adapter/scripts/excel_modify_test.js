@@ -34,8 +34,10 @@ export function modifyWorkbook(inputUri) {
     fs.writeBytes(outputUri, result.bytes, false);
     fs.writeText(reportUri, JSON.stringify(result.report, null, 2) + "\n", false);
     task.publish("EXCEL_MODIFIED", outputUri, "BootloaderTest.xlsx",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-    task.publish("EXCEL_MODIFY_RESULT", reportUri, "ExcelModifyTest 修改记录", "application/json");
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "");
+    task.publish("EXCEL_MODIFY_RESULT", reportUri, "ExcelModifyTest 修改记录",
+        "application/json", "");
     task.info("已更新 " + result.report.sheet + "!" + result.report.valueCell + " = " + timestamp);
     task.progress(100);
     return result.report;

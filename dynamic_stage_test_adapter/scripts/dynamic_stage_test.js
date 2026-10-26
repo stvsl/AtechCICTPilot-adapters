@@ -109,7 +109,8 @@ export function publishReport() {
     const uri = "artifact://dynamic-stage-report.json";
     // 重新开始共用产物目录，报告必须原子覆盖上一轮结果。
     fs.writeText(uri, JSON.stringify(report, null, 2) + "\n", true);
-    task.publish("DYNAMIC_STAGE_REPORT", uri, "动态流程测试报告", "application/json");
+    task.publish("DYNAMIC_STAGE_REPORT", uri, "动态流程测试报告",
+        "application/json", "");
     return report;
 }
 

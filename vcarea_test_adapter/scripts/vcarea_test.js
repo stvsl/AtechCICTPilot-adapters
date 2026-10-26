@@ -677,7 +677,8 @@ function publishExecutionSummary() {
         "VCAREA_EXECUTION_RESULT",
         RESULT_ARTIFACT_URI,
         "VCarEA 执行结果",
-        "application/json");
+        "application/json",
+        "");
 }
 
 /**

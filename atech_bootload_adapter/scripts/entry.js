@@ -23,7 +23,7 @@ export async function run() {
             message: String(error.message || error), code: error.code || "FLASH_ERROR"
         }, null, 2));
         task.publish("BOOTLOAD_ERROR", "artifact://bootload/error.json",
-            "刷写错误诊断", "application/json");
+            "刷写错误诊断", "application/json", "");
         throw error;
     }
 }

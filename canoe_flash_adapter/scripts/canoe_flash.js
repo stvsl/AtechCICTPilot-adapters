@@ -576,7 +576,8 @@ export async function collectArtifacts() {
                      destination,
                      baseName(relativePath),
                      relativePath.toLowerCase().endsWith(".json")
-                         ? "application/json" : "application/octet-stream");
+                         ? "application/json" : "application/octet-stream",
+                     "");
     }
     task.progress(100);
 }

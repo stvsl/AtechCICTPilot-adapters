@@ -68,12 +68,14 @@ export async function executeCommand(executable, arguments_, id, timeoutMs,
                 task.publish(`BOOTLOAD_${id}_${stream}`,
                     `artifact://bootload/${id}-${stream}.${extension}`,
                     `${id} ${stream}`, stream === "diagnostic"
-                        ? "application/json" : "text/plain; charset=utf-8");
+                        ? "application/json" : "text/plain; charset=utf-8",
+                    `${id}/${stream}`);
             }
             for (const stream of ["stdout", "stderr"]) {
                 task.publish(`BOOTLOAD_${id}_${stream}_raw`,
                     `artifact://bootload/${id}-${stream}.raw`,
-                    `${id} ${stream} 原始字节`, "application/octet-stream");
+                    `${id} ${stream} 原始字节`, "application/octet-stream",
+                    `${id}/${stream}`);
             }
         } finally {
             if (activeProcess !== null) {

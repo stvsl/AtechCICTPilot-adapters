@@ -79,7 +79,8 @@ export async function publishReport() {
     task.publish("REPORT_URI",
                  artifactReportUri,
                  "Hello World test report",
-                 "application/json");
+                 "application/json",
+                 "");
     task.info("Hello World test report published");
     task.progress(100);
     await task.delay(100);

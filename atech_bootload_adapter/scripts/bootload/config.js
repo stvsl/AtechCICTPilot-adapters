@@ -142,7 +142,7 @@ export function prepareConfiguration() {
         schema: CORE_SCHEMA, forceQuotes: true, quotingType: '"', lineWidth: -1
     }));
     task.publish("BOOTLOAD_CONFIG", "artifact://bootload/resolved.yaml",
-        "实际刷写配置", "application/yaml");
+        "实际刷写配置", "application/yaml", "");
     return config;
 }
 

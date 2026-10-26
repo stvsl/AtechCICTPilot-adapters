@@ -5,9 +5,9 @@
 
 ## 工程发现顺序
 
-任务可选提供 `TEST_CASES` JSON 文件。提供后只执行该文件列出的配置和测试用例，
-配置顺序与文件中首次出现的顺序一致。同一配置可以重复出现，适配器会合并它们的
-用例名称。
+任务可选提供 `TEST_CASES` 测试用例名称配置文件（`.json` 或 `.txt`）。提供后只执行该
+文件列出的配置和测试用例，配置顺序与文件中首次出现的顺序一致。同一配置可以重复
+出现，适配器会合并它们的用例名称，并且只打开该工程一次。
 
 未提供 `TEST_CASES` 时，适配器在压缩包中查找唯一的 `canoe.json`：
 
@@ -49,8 +49,26 @@ canoe-project.zip
 
 ## 指定测试用例
 
-用例文件是 UTF-8 JSON 数组，字段名区分大小写。`Configuration` 是相对于压缩包根目录
-的 `.cfg` 路径，`TestCaseNames` 是 CANoe 中测试用例的名称数组：
+用例文件支持 UTF-8 JSON 和纯文本两种格式；平台任务通过 `CANOE_TEST_CASES_JSON`
+工程包类型提供该文件，GUI 和 TUI 的文件输入同时接受 `.json` 与 `.txt`。
+
+### 文本格式
+
+每行一个工程，格式为 `<相对 .cfg 路径>:<用例>[,<用例>...]`。空行会被忽略：
+
+```text
+project/flash1.cfg:C01CASE,C02CASE
+project/flash2.cfg:C012CASE
+```
+
+执行时按文件行的出现顺序逐个工程打开 CANoe，只运行该工程冒号后列出的测试用例，
+完成报告收集后再进入下一行对应的工程。同一 `.cfg` 出现在多行时，用例名称合并后
+只执行一次。
+
+### JSON 格式
+
+JSON 是对象数组，字段名区分大小写。`Configuration` 是相对于压缩包根目录的 `.cfg`
+路径，`TestCaseNames` 是 CANoe 中测试用例的名称数组：
 
 ```json
 [
@@ -65,12 +83,9 @@ canoe-project.zip
 ]
 ```
 
-在 GUI 或 TUI 的 `TEST_CASES` 文件输入中选择上述 JSON 文件，无需手填名称列表。
-平台任务通过 `CANOE_TEST_CASES_JSON` 工程包类型提供该文件。
-
-同一工程的多个用例放入同一个 `TestCaseNames` 数组。每个名称必须匹配 CANoe 工程中的
-测试用例名称；未找到名称时该工程记为失败并继续后续工程。`TEST_CASES` 与压缩包中的
-`canoe.json` 同时存在时，`TEST_CASES` 中列出的配置和用例优先作为执行清单。
+两种格式都要求用例名称非空。每个名称必须匹配 CANoe 工程中的测试用例名称；未找到
+名称时该工程记为失败并继续后续工程。`TEST_CASES` 与压缩包中的 `canoe.json` 同时
+存在时，`TEST_CASES` 中列出的配置和用例优先作为执行清单。
 
 如果省略 `TEST_CASES`，适配器复用每个 `.cfg` 中现有的 `TestConfiguration` 或
 `TestEnvironment`，执行其中启用的测试用例。
@@ -79,7 +94,9 @@ canoe-project.zip
 
 `CANOE_REPORT_TYPE` 是必填多选项，至少选择 `vtestreport`、`XML`、`HTML`、`PDF` 中的一种。
 每个工程结束后，适配器生成并发布该工程所选的报告。产物位于
-`artifact://canoe-test/reports/<工程序号和配置名>/`，避免不同工程的同名报告互相覆盖。
+`artifact://canoe-test/reports/<cfg 文件名（不含扩展名）>/`，例如 `project/flash1.cfg`
+对应 `reports/flash1/`。文件夹保留配置原名中的中文、空格和标点；同名配置（不区分大小写）
+按执行顺序追加 `-2`、`-3` 等编号，并跳过其他配置原本使用的名称，避免报告互相覆盖。
 最终汇总文件为 `artifact://canoe-test/execution-result.json`，包含各工程状态、用例结果、
 报告错误和已发布产物。
 

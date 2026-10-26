@@ -282,7 +282,8 @@ function persistConfiguration(configuration) {
         "MQTT_CONFIG",
         ARTIFACT_CONFIG_URI,
         "VCarEA MQTT 连接配置",
-        "application/json");
+        "application/json",
+        "");
     task.info(`MQTT 连接配置已保存并发布：${WORKSPACE_CONFIG_URI}`);
 }
 

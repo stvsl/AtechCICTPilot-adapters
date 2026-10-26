@@ -48,14 +48,15 @@
 
 优先级如下：
 
-1. 提供 `TEST_CASES` 时，按用例 JSON 中配置的工程顺序和用例名称执行。每个配置的
-   `.cfg` 路径相对于 ZIP 根目录；相同配置条目会合并用例名称。
+1. 提供 `TEST_CASES` 时，按用例文件（`.json` 或 `.txt`）中配置的工程顺序和用例名称
+   执行。每个配置的 `.cfg` 路径相对于 ZIP 根目录；相同配置条目会合并用例名称。
+   文本格式每行为 `<相对 .cfg 路径>:<用例>[,<用例>...]`。
 2. 未提供 `TEST_CASES` 且存在唯一 `canoe.json` 时，解析版本组，筛选
    `CanoeVersion <= CANOE_VERSION`，选择最高兼容版本。该版本组的 `Configuration`
    数组顺序就是执行顺序；路径相对于 `canoe.json` 所在目录。
 3. 没有 `canoe.json` 时，递归查找全部 `.cfg`，以相对路径排序后执行。
 
-所有配置都必须存在且为安全相对 `.cfg` 路径。用例 JSON 和清单均在开始 CANoe 执行前
+所有配置都必须存在且为安全相对 `.cfg` 路径。用例文件和清单均在开始 CANoe 执行前
 验证路径；准备阶段提前核验首个 `.cfg` 的文件头版本，避免不兼容时启动 CANoe。
 后续 `.cfg` 在该工程即将执行时核验，因此前序工程已完成后，才会遇到后续配置的
 版本不兼容并停止。
@@ -70,15 +71,16 @@
 
 1. 核验 `.cfg` 版本，并调用 `Application.Open` 打开配置；配置切换前停止旧工程的
    Measurement，释放旧 Configuration / Measurement COM 句柄。
-2. 检测当前工程的 `TestConfiguration` 或 `TestEnvironment`。用例 JSON 存在时，按测试
+2. 检测当前工程的 `TestConfiguration` 或 `TestEnvironment`。用例文件存在时，按测试
    用例名称启用匹配项；未指定用例时复用工程内已有的启用项。
 3. 保存报告文件基线、设置所选原生报告格式并启动 Measurement。
 4. 串行运行配置中的测试，轮询用例 Verdict、记录结果和进度。
 5. 测试结束后等待 CANoe 报告写入完成，按需转换格式并立即发布当前工程报告。
 6. 停止测试和 Measurement，释放本工程 COM 句柄，但保留 CANoe 应用会话供下一个工程使用。
 
-报告产物使用 `artifact://canoe-test/reports/project-<序号>-<配置名>/`，并保留工程内
-相对目录；不同工程、不同测试模块生成同名文件时不会覆盖。最后发布
+报告产物使用 `artifact://canoe-test/reports/<cfg 文件名（不含扩展名）>/`，保留原名中的
+中文、空格和标点，并保留工程内相对目录。同名配置（不区分大小写）按执行顺序为后续目录
+追加 `-2`、`-3` 等编号，跳过其他配置本身使用的名称，避免报告覆盖。最后发布
 `artifact://canoe-test/execution-result.json`，其中包含工程状态、用例 Verdict、报告错误、
 各工程报告路径和执行错误。
 
@@ -110,7 +112,7 @@
 | 输入 | 要求 |
 | --- | --- |
 | `CANOE_PROJECT` | 必填 `.zip`，含一个或多个 `.cfg`，可含 `canoe.json` |
-| `TEST_CASES` | 可选 `.json`，列出配置路径和测试用例名称 |
+| `TEST_CASES` | 可选 `.json` 或 `.txt`，列出配置路径和测试用例名称 |
 | `CANOE_REPORT_TYPE` | 必填多选：`vtestreport`、`XML`、`HTML`、`PDF` |
 | `CANOE_VERSION` | 必填 CANoe 主版本 15、16、17、18、19 或 20 |
 | `NEW_CANOE_WHEN_START` | 必填布尔值：启动新实例或附加当前实例 |
@@ -125,7 +127,7 @@
 - [工作流](../StepConfig.groovy)
 - [插件清单](../PackageInfo.json)
 - [入口和逐工程执行](../scripts/canoe_test.js)
-- [工程规划和 JSON 校验](../scripts/canoe_test/project_plan.js)
+- [工程规划和用例文件校验](../scripts/canoe_test/project_plan.js)
 - [CANoe 会话和配置切换](../scripts/canoe_test/session.js)
 - [报告自动化](../scripts/canoe_test/report_automation.js)
 - [报告文件跟踪](../scripts/canoe_test/report_files.js)
