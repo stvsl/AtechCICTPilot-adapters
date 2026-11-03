@@ -20,11 +20,6 @@
             "EngineeringPackageId": "CANOE_TEST_PACKAGE_TEST_UNIT",
             "EngineeringPackageNameCN": "CANoE Test Unit 工程",
             "EngineeringPackageNameEN": "CANoE Test Unit Package"
-        },
-        {
-            "EngineeringPackageId": "CANOE_TEST_CASES_JSON",
-            "EngineeringPackageNameCN": "CANoe 测试用例配置",
-            "EngineeringPackageNameEN": "CANoe Test Case Configuration"
         }
     ],
     "Runtime": {
@@ -111,10 +106,8 @@
             "fileExtension": ".json|.txt",
             "required": false,
             "platform": {
-                "type": "EngineeringPackage",
-                "tags": [
-                    "CANOE_TEST_CASES_JSON"
-                ]
+                "type": "CaseSelection",
+                "tags": []
             }
         },
         {

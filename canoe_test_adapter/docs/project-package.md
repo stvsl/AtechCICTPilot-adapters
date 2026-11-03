@@ -49,8 +49,8 @@ canoe-project.zip
 
 ## 指定测试用例
 
-用例文件支持 UTF-8 JSON 和纯文本两种格式；平台任务通过 `CANOE_TEST_CASES_JSON`
-工程包类型提供该文件，GUI 和 TUI 的文件输入同时接受 `.json` 与 `.txt`。
+用例文件支持 UTF-8 JSON 和纯文本两种格式；平台任务通过 `CaseSelection` 类型为
+`TEST_CASES` 提供该文件，GUI 和 TUI 的文件输入同时接受 `.json` 与 `.txt`。
 
 ### 文本格式
 
