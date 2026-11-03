@@ -26,6 +26,8 @@ cmake --build --preset=dev-fast --target plugin_canoe_test_adapter
 中至少选择一种报告格式。需要筛选用例时加载 `TEST_CASES` 测试用例名称配置文件
 （`.json` 或 `.txt`）。
 
+清单字段、任务输入、设备配置与运行时权限见
+[PackageInfo.json 说明](docs/package-info.md)。
 工程规划规则、`canoe.json` 格式以及 JSON / 文本两种用例文件示例见
 [工程包说明](docs/project-package.md)。
 逐工程动态阶段、报告处理、失败和清理行为见[执行说明](docs/execution.md)。
