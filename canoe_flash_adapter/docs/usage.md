@@ -9,8 +9,8 @@
 | `FLASH_PARAMETERS` | 否 | 刷写参数 JSON |
 
 设备属性 `CANOE_VERSION` 必填；`CANOE_INSTALL_DIR` 可在自动发现安装目录失败时
-指定。`NEW_CANOE_WHEN_START` 为可选布尔值，`CANOE_PROJECT_DIR` 为清单中的
-可选任务目录属性；实际脚本工作区为 `workspace://canoe-project`。
+指定。`NEW_CANOE_WHEN_START` 为可选布尔值，`CANOE_PROJECT_DIR` 为必填的
+任务工作区根目录属性；实际脚本工作区为 `workspace://canoe-project`。
 
 GUI 与 TUI 使用同一组清单属性。实例选择的节点选项与默认行为以
 [scripts/canoe_flash.js](../scripts/canoe_flash.js) 的 `canoeStartMode()` 为准；

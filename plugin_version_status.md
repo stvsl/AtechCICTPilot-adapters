@@ -141,6 +141,66 @@
       "base_version": "1.0.0",
       "build_number": 4,
       "content_sha256": "43ada1507923b7b6010c8c666827d6855fdba9a2aafed181a54eff645f92f1e1"
+    },
+    {
+      "package_id": "hello_world_adapter",
+      "base_version": "1.0.0",
+      "build_number": 4,
+      "content_sha256": "ce1d8fe4c01232465a4edcec3c749109d430913fd3ad5b2b38241e0b652c0234"
+    },
+    {
+      "package_id": "dynamic_stage_test_plugin",
+      "base_version": "1.0.0",
+      "build_number": 4,
+      "content_sha256": "a72ba695c48691c58434db76fbd1aff67d9f84a893405c643d554ba9f1e5a1f9"
+    },
+    {
+      "package_id": "ExcelModifyTest",
+      "base_version": "1.0.0",
+      "build_number": 4,
+      "content_sha256": "9f66483c067ca7dfdbc960a26c47d06e379fe202d7486e05728310d7331c0d9b"
+    },
+    {
+      "package_id": "atech_bootload_adapter",
+      "base_version": "1.0.1",
+      "build_number": 4,
+      "content_sha256": "dca5bab90d4b87ab01dbd1fa41eaba7a72a6d736b8c7f298bed6eb6e08b8cb10"
+    },
+    {
+      "package_id": "canoe_flash_adapter",
+      "base_version": "1.0.0",
+      "build_number": 4,
+      "content_sha256": "b0853b38abdbd50dd29f15d32871db63c784fd82fd99f2dd461b0ce5391d0cfd"
+    },
+    {
+      "package_id": "canoe_test_adapter",
+      "base_version": "1.0.0",
+      "build_number": 4,
+      "content_sha256": "546c1ad9016070050a94cfd9a06ba0e67f6ba4786fa6b602ddbd281dc67d895b"
+    },
+    {
+      "package_id": "vcarea_test_adapter",
+      "base_version": "1.0.0",
+      "build_number": 5,
+      "content_sha256": "ad511efe7d7a0332da7339baf24eb21ca2351720bd06296d8ccfcce6416672e8"
+    },
+    {
+      "package_id": "canoe_test_adapter",
+      "base_version": "1.0.0",
+      "build_number": 5,
+      "content_sha256": "9ae716b39f0e6374ad8b7de7d91f01b5cc7e7369f7974c15cec2e2b9003fa223"
+    },
+    {
+      "package_id": "canoe_test_adapter",
+      "base_version": "1.0.0",
+      "build_number": 6,
+      "content_sha256": "d1400b4a4b569f4615af17fdd3d54319f8313e52de6b4d42dd34379fbf84f472"
+    },
+    {
+      "package_id": "canoe_flash_adapter",
+      "base_version": "1.0.0",
+      "build_number": 5,
+      "content_sha256": "e714a473e3c8c0540be150d8137460668d7529d3c15e35fe33ccd650ba87d6a6"
     }
   ]
 }

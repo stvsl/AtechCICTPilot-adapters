@@ -185,7 +185,7 @@ CANoe 安装显示名称模板展开为 `Vector CANoe 19`。这里的 `{version}
 | `id` | 显示名称 | `type` | 必填 | 配置说明 |
 | --- | --- | --- | --- | --- |
 | `CANOE_VERSION` | CANoe 版本 | `enum` | 是 | 单选主版本：`15`、`16`、`17`、`18`、`19`、`20`；选项 ID 均为字符串 |
-| `CANOE_PROJECT_DIR` | 任务工作区根目录 | `directory` | 否 | 清单声明的可选目录；当前脚本未读取，见下文 |
+| `CANOE_PROJECT_DIR` | 任务工作区根目录 | `directory` | 是 | 必填任务工作区根目录；当前脚本未读取，见下文 |
 | `CANOE_INSTALL_DIR` | CANoe 安装目录（自动发现失败时指定） | `directory` | 否 | CANoe 产品安装根目录，其下应有 `Exec64/` |
 | `CANOE_REPORT_VIEWER_DIR` | 报告查看器安装目录（自动发现失败时指定） | `directory` | 否 | Report Viewer 安装根目录，其下应有 `ReportViewerCli.exe` |
 | `NEW_CANOE_WHEN_START` | 启动时新建 CANoe 实例 | `boolean` | 是 | `true` 启动新实例；`false` 附加当前活动实例 |

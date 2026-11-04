@@ -189,7 +189,7 @@
             "nameCN": "任务工作区根目录",
             "nameEN": "Task Workspace Root",
             "type": "directory",
-            "required": false
+            "required": true
         },
         {
             "id": "CANOE_INSTALL_DIR",
