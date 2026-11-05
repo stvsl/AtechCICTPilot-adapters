@@ -48,6 +48,8 @@ const SUPPORTED_REPORT_TYPES = [
     REPORT_TYPE_HTML,
     REPORT_TYPE_PDF
 ];
+// 宿主单个任务最多保留 5000 条与用例明细；统计仍覆盖全部执行结果。
+const REPORTED_TEST_CASE_LIMIT = 5000;
 
 let testConfiguration = null;
 let testConfigurationReport = null;
@@ -58,6 +60,7 @@ let configurationPlans = [];
 let activeProject = null;
 let projectOutcomes = [];
 let summaryPublished = false;
+let structuredResultsReported = false;
 let currentReportPrefix = "";
 let publicationTypeCounts = {};
 let requestedTestCaseNames = [];
@@ -1266,6 +1269,7 @@ export async function prepare(projectPackage) {
     activeProject = null;
     projectOutcomes = [];
     summaryPublished = false;
+    structuredResultsReported = false;
     currentReportPrefix = "";
     publicationTypeCounts = {};
     communicationModules = [];
@@ -1738,6 +1742,67 @@ function publishSelectedReports() {
     }
 }
 
+// 组合工程内稳定的用例编号：带上工程序号，避免不同工程内同名用例互相覆盖。
+function structuredCaseId(projectIndex, result) {
+    const unit = String(result.testUnit === undefined
+        || result.testUnit === null ? "" : result.testUnit);
+    const id = String(result.id === undefined || result.id === null
+        ? "" : result.id);
+    const composed = `P${projectIndex + 1}/`
+        + (unit === "" ? "" : `${unit}/`) + id;
+    // caseId 契约上限为 256 字符，超长时保留仍可定位的前缀。
+    return composed.length <= 256 ? composed : composed.substring(0, 256);
+}
+
+/*
+ * 收尾阶段把逐用例 Verdict 与工程级统计通过 task.reportResult 上报宿主。
+ * 宿主据此生成 TASK_RESULT 的 summary 与 TASK_RESULT_CASES 明细；没有执行任何
+ * 用例时保持静默，绝不把“未执行”伪造成“全部通过”。
+ */
+function reportStructuredResults() {
+    if (structuredResultsReported) {
+        return;
+    }
+    structuredResultsReported = true;
+    let total = 0;
+    let passed = 0;
+    let failed = 0;
+    const cases = [];
+    projectOutcomes.forEach((project, projectIndex) => {
+        for (const result of project.Results) {
+            ++total;
+            if (result.passed) {
+                ++passed;
+            } else {
+                ++failed;
+            }
+            const id = String(result.id === undefined || result.id === null
+                ? "" : result.id);
+            if (cases.length >= REPORTED_TEST_CASE_LIMIT || id === "") {
+                continue;
+            }
+            cases.push({
+                caseId: structuredCaseId(projectIndex, result),
+                name: String(result.name === undefined
+                    || result.name === null || result.name === ""
+                    ? id : result.name),
+                result: result.passed ? "passed" : "failed",
+                durationMs: 0,
+                message: String(result.verdict === undefined
+                    || result.verdict === null ? "" : result.verdict)
+            });
+        }
+    });
+    if (total === 0) {
+        return;
+    }
+    try {
+        task.reportResult({total, passed, failed, cases});
+    } catch (error) {
+        task.warning(`Unable to report CANoe case results: ${errorMessage(error)}`);
+    }
+}
+
 function publishExecutionSummary() {
     if (summaryPublished) {
         return;
@@ -1833,6 +1898,7 @@ export async function collectArtifacts() {
     } catch (error) {
         task.warning(`Unable to publish CANoe execution summary: ${errorMessage(error)}`);
     }
+    reportStructuredResults();
     task.progress(100);
     debug(`collectArtifacts: completed (projects=${projectOutcomes.length})`);
 }
@@ -1889,6 +1955,7 @@ export async function cleanup() {
         activeProject = null;
         projectOutcomes = [];
         summaryPublished = false;
+        structuredResultsReported = false;
         currentReportPrefix = "";
         publicationTypeCounts = {};
         expectedResultCount = 0;

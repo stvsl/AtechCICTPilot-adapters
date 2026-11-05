@@ -7,6 +7,7 @@ import {
     maximumWaitDurationSeconds,
     message,
     minimumTestCaseCount,
+    reportedTestCaseDetailLimit,
     simulatedTestCaseProgressReportLimit
 } from "./constants.js";
 import {
@@ -56,6 +57,8 @@ function testCasePassed(index) {
 async function simulateTestCases(testCaseCount, testCaseDurationMs) {
     let passed = 0;
     let failed = 0;
+    // 逐用例明细只在宿主上限内保留，统计始终覆盖全部配置用例。
+    const caseResults = [];
     // 进度最多上报 100 次，用例越多每批包含的用例越多。
     const progressStep = Math.max(
         1, Math.ceil(testCaseCount / simulatedTestCaseProgressReportLimit));
@@ -68,12 +71,22 @@ async function simulateTestCases(testCaseCount, testCaseDurationMs) {
         await task.delay(testCaseDurationMs);
         task.resetTimeout();
 
-        if (testCasePassed(index)) {
+        const casePassed = testCasePassed(index);
+        if (casePassed) {
             ++passed;
             task.info(`${id} 执行完成 -通过`);
         } else {
             ++failed;
             task.info(`${id} 执行完成 -失败`);
+        }
+        if (caseResults.length < reportedTestCaseDetailLimit) {
+            caseResults.push({
+                caseId: id,
+                name: id,
+                result: casePassed ? "passed" : "failed",
+                durationMs: testCaseDurationMs,
+                message: casePassed ? "" : "模拟测试用例执行失败"
+            });
         }
 
         if (index % progressStep === 0 || index === testCaseCount) {
@@ -86,7 +99,8 @@ async function simulateTestCases(testCaseCount, testCaseDurationMs) {
     return {
         total: testCaseCount,
         passed,
-        failed
+        failed,
+        cases: caseResults
     };
 }
 
@@ -159,11 +173,22 @@ export async function helloWorld() {
     const testCaseSummary = await simulateTestCases(testCaseCount,
                                                     testCaseDurationMs);
     completeWorkload(testCaseSummary);
+    // 上报结构化用例结果：统计覆盖全部用例，明细受宿主上限约束。
+    task.reportResult({
+        total: testCaseSummary.total,
+        passed: testCaseSummary.passed,
+        failed: testCaseSummary.failed,
+        cases: testCaseSummary.cases
+    });
     task.info(message);
     task.progress(75);
     return {
         message,
-        testCaseSummary,
+        testCaseSummary: {
+            total: testCaseSummary.total,
+            passed: testCaseSummary.passed,
+            failed: testCaseSummary.failed
+        },
         waitDurationSeconds,
         testCaseCount,
         testCaseDurationMs

@@ -201,6 +201,24 @@
       "base_version": "1.0.0",
       "build_number": 5,
       "content_sha256": "e714a473e3c8c0540be150d8137460668d7529d3c15e35fe33ccd650ba87d6a6"
+    },
+    {
+      "package_id": "vcarea_test_adapter",
+      "base_version": "1.0.0",
+      "build_number": 6,
+      "content_sha256": "8be2b989c109e107ea39cc141edfc47da46ce4b43031ecc83ee68ce2de3e9bb8"
+    },
+    {
+      "package_id": "hello_world_adapter",
+      "base_version": "1.0.0",
+      "build_number": 5,
+      "content_sha256": "ebeb39ed6252f6a6e81673e52eb778e322e73b71a5dbf1760a00c443d5aa34f9"
+    },
+    {
+      "package_id": "canoe_test_adapter",
+      "base_version": "1.0.0",
+      "build_number": 7,
+      "content_sha256": "9e1a125ded486683c4b95c33f2d1b2e0df066d7fcdacc5c5cdc82d2445997249"
     }
   ]
 }

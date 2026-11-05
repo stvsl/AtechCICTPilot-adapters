@@ -15,6 +15,9 @@ export const maximumTestCaseDurationMs = 60000;
 // 无论用例总数多少，批量执行进度最多上报 100 次，避免进度事件数量随配置增长。
 export const simulatedTestCaseProgressReportLimit = 100;
 
+// 宿主单个任务最多保留 5000 条用例明细；统计始终覆盖配置的全部用例。
+export const reportedTestCaseDetailLimit = 5000;
+
 // 插件执行中间数据只写入当前节点私有的工作区。
 export const workspaceDirectoryUri = "workspace://hello-world";
 export const workspaceContextUri = `${workspaceDirectoryUri}/context.json`;

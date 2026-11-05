@@ -88,6 +88,12 @@
 `StartedProjectCount` 和 `CompletedProjectCount` 分别统计已开始和已完成测试的工程数量；
 取消、致命错误和未执行工程不会被计为通过。
 
+收尾阶段（`collectArtifacts`）还会通过 `task.reportResult()` 把逐用例 Verdict 与
+通过 / 失败统计上报宿主：`caseId` 由“工程序号 / 测试单元 / 用例 ID”组成，`result`
+为 `passed` / `failed`，`message` 记录原始 Verdict。统计覆盖全部已执行用例，逐用例
+明细最多上报 5000 条（超出部分只保留在本地摘要中）。未执行任何用例时不上报，
+不会把“未执行”伪造成“全部通过”。
+
 ## 失败与取消
 
 | 情况 | 后续工程 | 最终结果 |
