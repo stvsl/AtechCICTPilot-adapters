@@ -261,6 +261,12 @@
       "base_version": "1.0.0",
       "build_number": 5,
       "content_sha256": "82f3434924bd19541aac462d14d860c19ca0212f0b070f34a071fde51cc4843f"
+    },
+    {
+      "package_id": "atech_bootload_adapter",
+      "base_version": "1.0.1",
+      "build_number": 6,
+      "content_sha256": "708f2a10e868db76b6ccfb6a47526b752273616692e5bc002275edaa675e7e4c"
     }
   ]
 }

@@ -20,7 +20,7 @@
 调研日期：2026-10-19。
 
 实际程序目录：
-`D:\Work\2.Projects\11_CICT\docs\ATECH BootLoad Tools_v1.0.0.1`。
+`D:\Work\Projects\11_CICT\code\docs\ATECH BootLoad Tools_v1.0.0.1`。
 
 两个入口的文件版本均为 `1.0.0.1`：
 
