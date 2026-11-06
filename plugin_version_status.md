@@ -303,6 +303,12 @@
       "base_version": "1.0.0",
       "build_number": 7,
       "content_sha256": "e714a473e3c8c0540be150d8137460668d7529d3c15e35fe33ccd650ba87d6a6"
+    },
+    {
+      "package_id": "vcarea_test_adapter",
+      "base_version": "1.0.0",
+      "build_number": 9,
+      "content_sha256": "8be2b989c109e107ea39cc141edfc47da46ce4b43031ecc83ee68ce2de3e9bb8"
     }
   ]
 }
