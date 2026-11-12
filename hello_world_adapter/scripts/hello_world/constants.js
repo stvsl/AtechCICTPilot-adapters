@@ -11,6 +11,9 @@ export const maximumWaitDurationSeconds = 600;
 export const minimumTestCaseCount = 1;
 export const maximumTestCaseCount = 100000;
 export const maximumTestCaseDurationMs = 60000;
+// 多 config 演示：用例树按该数量拆成多棵，用于验证界面分组与层级合并。
+export const minimumTestConfigCount = 1;
+export const maximumTestConfigCount = 8;
 
 // 无论用例总数多少，批量执行进度最多上报 100 次，避免进度事件数量随配置增长。
 export const simulatedTestCaseProgressReportLimit = 100;

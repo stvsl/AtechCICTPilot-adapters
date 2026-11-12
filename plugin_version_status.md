@@ -309,6 +309,18 @@
       "base_version": "1.0.0",
       "build_number": 9,
       "content_sha256": "8be2b989c109e107ea39cc141edfc47da46ce4b43031ecc83ee68ce2de3e9bb8"
+    },
+    {
+      "package_id": "hello_world_adapter",
+      "base_version": "1.0.0",
+      "build_number": 8,
+      "content_sha256": "33b459e084d43ea814bfbbde9bf591e4b7130feaded706ac32e240069af98ab0"
+    },
+    {
+      "package_id": "hello_world_adapter",
+      "base_version": "1.0.0",
+      "build_number": 9,
+      "content_sha256": "d8e920093ad172deef2921f32650e26e9f0fe43e3e1dc5c40bde97ec14f2e7fe"
     }
   ]
 }

@@ -9,6 +9,7 @@
 | `WAIT_DURATION_SECONDS` | 是 | 整数秒，0～600 |
 | `TEST_CASE_COUNT` | 是 | 整数，1～100000 |
 | `TEST_CASE_DURATION_MS` | 是 | 整数毫秒，0～60000 |
+| `TEST_CONFIG_COUNT` | 是 | 整数，1～8；用例树按该数量拆成多个 config |
 
 无设备属性。整数由宿主装配为 `input://` 文本文件，脚本严格检查整数格式和范围。
 该插件验证模拟工作负载，输入名沿用测试平台工程分类；不会操作 CANoe。
@@ -34,6 +35,26 @@
 `helloWorld` 阶段还通过 `task.reportResult()` 上报逐用例明细与统计：用例 ID、名称、
 结论、模拟耗时和失败说明随任务结果进入 `result_json`，供平台执行结果与用例明细使用。
 统计始终覆盖配置的全部用例，逐用例明细最多上报 5000 条，避免超大任务撑大结果快照。
+
+## 测试用例树（`@atech/task/case`）
+
+本插件同时演示宿主新增的用例树 API，用于驱动任务详情页的「测试详情」页签：
+
+| 调用 | 时机 | 说明 |
+| --- | --- | --- |
+| `taskCase.publish(tree)` | `validateInput` | 发布一个 config 的完整用例树，重复发布整棵替换 |
+| `taskCase.start(caseId, {configId})` | 每条用例开始前 | 标记用例进入执行中 |
+| `taskCase.finish(caseId, {configId, result, durationMs, message})` | 每条用例结束后 | 写入结论与实测耗时 |
+| `taskCase.stats()` / `taskCase.trees()` | 需要时 | 读取汇总统计与已发布树清单 |
+
+树结构为两级：config → 通信层 / 应用层 → 用例。用例按 `TEST_CONFIG_COUNT`
+均分到多个 config，因此把该参数设为大于 1 即可验证"同一任务多棵用例树"的
+分组展示；设为 1 时界面只显示单棵树。层级节点的结论与耗时由宿主按子用例
+自动汇总，脚本不需要计算。
+
+用例状态先由 `start` 置为执行中、再由 `finish` 置为通过或失败，因此执行过程
+中测试详情页能看到实时进度。`durationMs` 用真实计时器测量，反映实际执行耗时
+而不是配置值。
 
 ## 维护与验证
 

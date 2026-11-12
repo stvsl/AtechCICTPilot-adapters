@@ -1,18 +1,24 @@
 import * as fs from "@atech/fs";
 import * as task from "@atech/task";
+import * as taskCase from "@atech/task/case";
+
+import { publishCaseTrees } from "./cases.js";
 
 import {
     maximumTestCaseCount,
     maximumTestCaseDurationMs,
+    maximumTestConfigCount,
     maximumWaitDurationSeconds,
     message,
     minimumTestCaseCount,
+    minimumTestConfigCount,
     reportedTestCaseDetailLimit,
     simulatedTestCaseProgressReportLimit
 } from "./constants.js";
 import {
     completeWorkload,
     executionState,
+    setCaseConfiguration,
     setTestParameters,
     startWorkload
 } from "./state.js";
@@ -37,7 +43,7 @@ function readIntegerParameter(parameterUri, parameterId, minimum, maximum) {
 }
 
 // 用例编号至少保留两位，以保证首个用例与控制台约定一致。
-function testCaseId(index) {
+export function testCaseId(index) {
     return `CT_TEST_CASE_${String(index).padStart(2, "0")}`;
 }
 
@@ -45,7 +51,7 @@ function testCaseId(index) {
  * 用固定的交替结果覆盖通过与失败两种控制台输出，避免随机结果导致问题无法复现。
  * 单个用例失败只代表模拟结果，完整批次仍会继续执行并生成汇总报告。
  */
-function testCasePassed(index) {
+export function testCasePassed(index) {
     return index % 2 === 1;
 }
 
@@ -54,7 +60,9 @@ function testCasePassed(index) {
  * 供 CLI 控制台和任务事件订阅者观察。单条时长同时决定输出节奏，让运行时在
  * 每次等待期间检查暂停、取消和超时。
  */
-async function simulateTestCases(testCaseCount, testCaseDurationMs) {
+async function simulateTestCases(testCaseCount,
+                                 testCaseDurationMs,
+                                 caseConfig) {
     let passed = 0;
     let failed = 0;
     // 逐用例明细只在宿主上限内保留，统计始终覆盖全部配置用例。
@@ -66,10 +74,16 @@ async function simulateTestCases(testCaseCount, testCaseDurationMs) {
     for (let index = 1; index <= testCaseCount; ++index) {
         task.checkCancelled();
         const id = testCaseId(index);
+        const configId = caseConfig.get(id) || "";
+        // 先标记执行中，测试详情页才能看到"正在执行"而不是一直"待执行"。
+        taskCase.start(id, { configId, name: id });
         task.info(`正在执行${id}`);
-        // 配置的单条执行时长代表该用例的模拟耗时。
+        // 配置的单条执行时长代表该用例的模拟耗时；用真实计时器测量，
+        // 让宿主统计的耗时反映实际执行而不是配置值。
+        const caseStartedAt = Date.now();
         await task.delay(testCaseDurationMs);
         task.resetTimeout();
+        const caseDurationMs = Math.max(0, Date.now() - caseStartedAt);
 
         const casePassed = testCasePassed(index);
         if (casePassed) {
@@ -79,12 +93,19 @@ async function simulateTestCases(testCaseCount, testCaseDurationMs) {
             ++failed;
             task.info(`${id} 执行完成 -失败`);
         }
+        // 用例结论与耗时上报给宿主用例树，重复上报按最后一次为准。
+        taskCase.finish(id, {
+            configId,
+            result: casePassed ? "passed" : "failed",
+            durationMs: caseDurationMs,
+            message: casePassed ? "" : "模拟测试用例执行失败"
+        });
         if (caseResults.length < reportedTestCaseDetailLimit) {
             caseResults.push({
                 caseId: id,
                 name: id,
                 result: casePassed ? "passed" : "failed",
-                durationMs: testCaseDurationMs,
+                durationMs: caseDurationMs,
                 message: casePassed ? "" : "模拟测试用例执行失败"
             });
         }
@@ -110,7 +131,8 @@ async function simulateTestCases(testCaseCount, testCaseDurationMs) {
  */
 export async function validateInput(waitDurationUri,
                                     testCaseCountUri,
-                                    testCaseDurationUri) {
+                                    testCaseDurationUri,
+                                    testConfigCountUri) {
     requirePreparedWorkspace();
     const waitDurationSeconds = readIntegerParameter(
         waitDurationUri,
@@ -127,13 +149,24 @@ export async function validateInput(waitDurationUri,
         "TEST_CASE_DURATION_MS",
         0,
         maximumTestCaseDurationMs);
+    const testConfigCount = readIntegerParameter(
+        testConfigCountUri,
+        "TEST_CONFIG_COUNT",
+        minimumTestConfigCount,
+        maximumTestConfigCount);
     setTestParameters({
         waitDurationSeconds,
         testCaseCount,
-        testCaseDurationMs
+        testCaseDurationMs,
+        testConfigCount
     });
+    // 用例树在参数校验阶段发布：此时条数已确定、用例尚未执行，测试详情页
+    // 能立刻显示完整的"待执行"清单，而不是等执行结束才出现。
+    const caseConfig = publishCaseTrees(testCaseCount, testConfigCount);
+    setCaseConfiguration(caseConfig);
     task.info(`Validated a ${waitDurationSeconds}-second workload with `
-              + `${testCaseCount} test cases of ${testCaseDurationMs} ms`);
+              + `${testCaseCount} test cases of ${testCaseDurationMs} ms `
+              + `across ${testConfigCount} configuration(s)`);
     task.progress(10);
     await task.delay(100);
 }
@@ -145,6 +178,7 @@ export async function validateInput(waitDurationUri,
 export async function helloWorld() {
     requirePreparedWorkspace();
     const {
+        caseConfig,
         testCaseCount,
         testCaseDurationMs,
         waitDurationSeconds
@@ -171,7 +205,8 @@ export async function helloWorld() {
 
     task.progress(45);
     const testCaseSummary = await simulateTestCases(testCaseCount,
-                                                    testCaseDurationMs);
+                                                    testCaseDurationMs,
+                                                    caseConfig);
     completeWorkload(testCaseSummary);
     // 上报结构化用例结果：统计覆盖全部用例，明细受宿主上限约束。
     task.reportResult({

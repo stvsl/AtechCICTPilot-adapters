@@ -6,6 +6,8 @@
 let waitDurationSeconds = null;
 let testCaseCount = null;
 let testCaseDurationMs = null;
+// 用例 ID → 所属 config：执行阶段据此把状态更新到正确的用例树上。
+let caseConfig = new Map();
 let startedAt = 0;
 let completedAt = 0;
 let helloWorldCompleted = false;
@@ -20,6 +22,7 @@ export function resetExecutionState() {
     waitDurationSeconds = null;
     testCaseCount = null;
     testCaseDurationMs = null;
+    caseConfig = new Map();
     startedAt = 0;
     completedAt = 0;
     helloWorldCompleted = false;
@@ -37,9 +40,15 @@ export function setTestParameters(parameters) {
     testCaseDurationMs = parameters.testCaseDurationMs;
 }
 
+// 保存用例到 config 的归属映射，供执行阶段更新正确的用例树。
+export function setCaseConfiguration(mapping) {
+    caseConfig = mapping;
+}
+
 // 返回当前状态快照，调用方只读取状态，修改必须通过专用函数完成。
 export function executionState() {
     return {
+        caseConfig,
         waitDurationSeconds,
         testCaseCount,
         testCaseDurationMs,

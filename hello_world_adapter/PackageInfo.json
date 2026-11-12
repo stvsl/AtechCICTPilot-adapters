@@ -91,6 +91,17 @@
             }
         },
         {
+            "id": "TEST_CONFIG_COUNT",
+            "nameCN": "模拟工程配置数量（1-8，用于验证多 config 用例树）",
+            "nameEN": "Simulated Configuration Count (1-8, for multi-config case trees)",
+            "type": "integer",
+            "required": true,
+            "platform": {
+                "type": "Original",
+                "tags": []
+            }
+        },
+        {
             "id": "TEST_REPORT_TYPE",
             "nameCN": "测试报告类型",
             "nameEN": "Test Report Type",
