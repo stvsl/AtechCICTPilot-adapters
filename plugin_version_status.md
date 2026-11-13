@@ -363,6 +363,12 @@
       "base_version": "1.0.0",
       "build_number": 10,
       "content_sha256": "933138307ee4721930a79d03cef027be2383fd648ceec4a6007b0753baefd210"
+    },
+    {
+      "package_id": "hello_world_adapter",
+      "base_version": "1.0.0",
+      "build_number": 11,
+      "content_sha256": "757c2b023c23c2e28e4ee03fa2c58e0bd9061dec8f483765591892a148706143"
     }
   ]
 }
