@@ -40,22 +40,29 @@ function configurationOf(index) {
 }
 
 /*
- * 为单个 config 生成两层结构：通信层与应用层各承担一半用例。
+ * 为单个 config 生成两层结构：先通信层，再应用层。
+ *
+ * 用例编号与执行顺序一一对应：通信层占用区间的前半段连续编号，应用层占用
+ * 后半段。因此执行阶段按编号顺序逐条跑完时，一定是"通信层整体跑完才开始
+ * 应用层"，两层不会在时间上交错——这正是真实分层测试的顺序执行形态。
  *
  * 层级节点的 nodeId 在任务内唯一（带 config 前缀），用例节点直接用全局
  * 用例 ID，因此宿主更新某条用例时不需要知道它属于哪个层级。
  */
 function buildConfigTree(configuration, range) {
+    const caseTotal = Math.max(0, range.lastCase - range.firstCase + 1);
+    // 两层均分，奇数条时通信层多一条（先执行的一层先拿）。
+    const communicationCount = Math.ceil(caseTotal / 2);
     const communicationCases = [];
     const applicationCases = [];
-    for (let index = range.firstCase; index <= range.lastCase; ++index) {
+    for (let offset = 0; offset < caseTotal; ++offset) {
+        const index = range.firstCase + offset;
         const caseNode = {
             nodeId: testCaseId(index),
             name: testCaseId(index),
             type: "case"
         };
-        // 交替分配，让两个层级都有通过和失败的用例，便于观察聚合结论。
-        if ((index - range.firstCase) % 2 === 0) {
+        if (offset < communicationCount) {
             communicationCases.push(caseNode);
         } else {
             applicationCases.push(caseNode);
