@@ -16,7 +16,7 @@ cmake --build --preset=dev-fast --target plugin_hello_world_adapter
 按清单提供 `CANOE_PROJECT` ZIP、等待秒数、模拟用例条数和单条耗时；
 短任务可选择 `0` 秒、`2` 条、每条 `0` 毫秒。
 
-完成后查看 `artifact://hello-world-report.json`。模拟用例交替通过与失败，
+完成后查看 `artifact://hello-world-report.json`。模拟用例随机通过与失败，
 工作流在模拟批次完整执行并校验成功后完成。
 
 ## 文档与维护

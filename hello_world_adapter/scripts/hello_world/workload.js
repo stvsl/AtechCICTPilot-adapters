@@ -48,17 +48,24 @@ export function testCaseId(index) {
 }
 
 /*
- * 用固定的交替结果覆盖通过与失败两种控制台输出，避免随机结果导致问题无法复现。
- * 单个用例失败只代表模拟结果，完整批次仍会继续执行并生成汇总报告。
+ * 单条用例的模拟结论：随机通过与失败。
+ *
+ * 演示插件需要"通过与失败混在一起"的真实观感，固定交替（奇数通过、偶数
+ * 失败）会让每一层的聚合结论一眼可预测，看不出随机失败时的排查路径。
+ * 失败只代表模拟结果，完整批次仍会继续执行并生成汇总报告。
  */
-export function testCasePassed(index) {
-    return index % 2 === 1;
+export function testCasePassed() {
+    return Math.random() < 0.5;
 }
 
 /*
  * 按配置的条数与单条时长模拟测试用例。每个用例严格输出开始和结束两条日志，
  * 供 CLI 控制台和任务事件订阅者观察。单条时长同时决定输出节奏，让运行时在
  * 每次等待期间检查暂停、取消和超时。
+ *
+ * 执行顺序就是用例编号顺序：用例树把每个 config 的用例区间按"前一半通信层、
+ * 后一半应用层"连续切分，因此编号递增意味着先跑完通信层再跑应用层，两层
+ * 在时间上不会交错——这与真实分层测试的顺序执行形态一致。
  */
 async function simulateTestCases(testCaseCount,
                                  testCaseDurationMs,
@@ -85,7 +92,7 @@ async function simulateTestCases(testCaseCount,
         task.resetTimeout();
         const caseDurationMs = Math.max(0, Date.now() - caseStartedAt);
 
-        const casePassed = testCasePassed(index);
+        const casePassed = testCasePassed();
         if (casePassed) {
             ++passed;
             task.info(`${id} 执行完成 -通过`);
