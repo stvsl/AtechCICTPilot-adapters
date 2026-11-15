@@ -406,6 +406,48 @@
       "base_version": "1.0.0",
       "build_number": 11,
       "content_sha256": "8be2b989c109e107ea39cc141edfc47da46ce4b43031ecc83ee68ce2de3e9bb8"
+    },
+    {
+      "package_id": "vcarea_test_adapter",
+      "base_version": "1.0.0",
+      "build_number": 12,
+      "content_sha256": "338f04077dc14160736808ea9a48130a7c5f2a6ca15f20ab7bcdc5c8b72ed8a0"
+    },
+    {
+      "package_id": "hello_world_adapter",
+      "base_version": "1.0.0",
+      "build_number": 12,
+      "content_sha256": "1bdc69e4225096f3cd5b2a1e95631d3fed36839f3597f6c6f6bd74790d9d9491"
+    },
+    {
+      "package_id": "dynamic_stage_test_plugin",
+      "base_version": "1.0.0",
+      "build_number": 9,
+      "content_sha256": "17afcff00479b6e03053ae0b3b2a05e1fb530b3b7edf0927b12c0420908fb627"
+    },
+    {
+      "package_id": "canoe_test_adapter",
+      "base_version": "1.0.0",
+      "build_number": 12,
+      "content_sha256": "ab5d2a64b7fb40594acb9b9f34fc46a787fa01b05da795b26fac64058a543b32"
+    },
+    {
+      "package_id": "canoe_flash_adapter",
+      "base_version": "1.0.0",
+      "build_number": 10,
+      "content_sha256": "8ead54321c9fe5dc7b5b4b1dfc33c85cce46fed65f6c259ea267fa9a60423222"
+    },
+    {
+      "package_id": "atech_bootload_adapter",
+      "base_version": "1.0.1",
+      "build_number": 9,
+      "content_sha256": "0a10d15a893f8cef8816a9918c7159f61a700ea87b783ecf41144212bd932070"
+    },
+    {
+      "package_id": "ExcelModifyTest",
+      "base_version": "1.0.0",
+      "build_number": 9,
+      "content_sha256": "3210a69e3f75fc389fc1cdd0decffe0c106a4f67acefbb25b5ff6a9b24c2aab8"
     }
   ]
 }
