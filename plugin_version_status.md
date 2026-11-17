@@ -408,46 +408,46 @@
       "content_sha256": "8be2b989c109e107ea39cc141edfc47da46ce4b43031ecc83ee68ce2de3e9bb8"
     },
     {
-      "package_id": "ExcelModifyTest",
+      "package_id": "vcarea_test_adapter",
       "base_version": "1.0.0",
-      "build_number": 9,
-      "content_sha256": "2aec82a7e718a7a0cbbdb6e46a7fbdf842c6f4c0988feb969df1b2ef0c605276"
+      "build_number": 12,
+      "content_sha256": "338f04077dc14160736808ea9a48130a7c5f2a6ca15f20ab7bcdc5c8b72ed8a0"
     },
     {
       "package_id": "hello_world_adapter",
       "base_version": "1.0.0",
       "build_number": 12,
-      "content_sha256": "253c941d9a5cad4da40ecdf652041462f3f1bdce540dc8463cf6e00f2f1ca1f1"
-    },
-    {
-      "package_id": "vcarea_test_adapter",
-      "base_version": "1.0.0",
-      "build_number": 12,
-      "content_sha256": "e5fe88a93f64fd72053bc2865d774f2753540286b66749a1c19552898024c8e0"
-    },
-    {
-      "package_id": "atech_bootload_adapter",
-      "base_version": "1.0.1",
-      "build_number": 9,
-      "content_sha256": "9cbfba2625ba1ca3fdea216c352a91d24a52b2866e6cc3742af0f8abe86de06f"
-    },
-    {
-      "package_id": "canoe_flash_adapter",
-      "base_version": "1.0.0",
-      "build_number": 10,
-      "content_sha256": "a83da5b00446e490449faa7b038977073a1d6bcc90344c48867c974a6a0b9d74"
+      "content_sha256": "1bdc69e4225096f3cd5b2a1e95631d3fed36839f3597f6c6f6bd74790d9d9491"
     },
     {
       "package_id": "dynamic_stage_test_plugin",
       "base_version": "1.0.0",
       "build_number": 9,
-      "content_sha256": "499c877d1fa99fd5933694fb943dc8ae23c73b6bd44a9f624fed637a41e1af45"
+      "content_sha256": "17afcff00479b6e03053ae0b3b2a05e1fb530b3b7edf0927b12c0420908fb627"
     },
     {
       "package_id": "canoe_test_adapter",
       "base_version": "1.0.0",
       "build_number": 12,
-      "content_sha256": "2b55cfb9c7b3f8baaeb467f7429e959c3f55476b42a60cf8a75178de91c8d04a"
+      "content_sha256": "ab5d2a64b7fb40594acb9b9f34fc46a787fa01b05da795b26fac64058a543b32"
+    },
+    {
+      "package_id": "canoe_flash_adapter",
+      "base_version": "1.0.0",
+      "build_number": 10,
+      "content_sha256": "8ead54321c9fe5dc7b5b4b1dfc33c85cce46fed65f6c259ea267fa9a60423222"
+    },
+    {
+      "package_id": "atech_bootload_adapter",
+      "base_version": "1.0.1",
+      "build_number": 9,
+      "content_sha256": "0a10d15a893f8cef8816a9918c7159f61a700ea87b783ecf41144212bd932070"
+    },
+    {
+      "package_id": "ExcelModifyTest",
+      "base_version": "1.0.0",
+      "build_number": 9,
+      "content_sha256": "3210a69e3f75fc389fc1cdd0decffe0c106a4f67acefbb25b5ff6a9b24c2aab8"
     }
   ]
 }
