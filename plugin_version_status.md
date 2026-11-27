@@ -646,6 +646,36 @@
       "base_version": "1.0.0",
       "build_number": 26,
       "content_sha256": "82915fe2beb18d0c8071c2a049a62dcaeff9e62ce3a3e5b9db3f302717a5a664"
+    },
+    {
+      "package_id": "ExcelModifyTest",
+      "base_version": "1.0.0",
+      "build_number": 11,
+      "content_sha256": "9fe5335c04cadd8920968ab25535b193e99b68bac1c9ff5e3f7c4e1d73496f7a"
+    },
+    {
+      "package_id": "dynamic_stage_test_plugin",
+      "base_version": "1.0.0",
+      "build_number": 11,
+      "content_sha256": "367f29209a2eb0f9ab6c9b9203932c5a3970fa9c8b8716a20be4361423c7964b"
+    },
+    {
+      "package_id": "vcardas_bootloader_adapter",
+      "base_version": "1.0.0",
+      "build_number": 27,
+      "content_sha256": "fef4c3bc03142cb1df184490bbabdd1a9952ba050e296a49cc653776d04694e7"
+    },
+    {
+      "package_id": "hello_world_adapter",
+      "base_version": "1.0.0",
+      "build_number": 14,
+      "content_sha256": "435a685e029a76fa7e285e38c446234aefa7c16aa5bf284c9271918fab87c310"
+    },
+    {
+      "package_id": "canoe_test_adapter",
+      "base_version": "1.0.0",
+      "build_number": 14,
+      "content_sha256": "dedf5112fb3ab27a8a2a389727abc2870e64c12018a2929d2a9049c856c903eb"
     }
   ]
 }
