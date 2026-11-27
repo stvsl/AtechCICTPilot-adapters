@@ -13,6 +13,7 @@
 | [动态阶段测试](dynamic_stage_test_adapter/README.md) | `dynamic_stage_test_plugin` | 验证阶段在运行时逐个创建后继阶段及失败收尾 |
 | [Hello World](hello_world_adapter/README.md) | `hello_world_adapter` | 验证多阶段执行、日志、进度、产物与清理 |
 | [VCarEA 测试](vcarea_test_adapter/README.md) | `vcarea_test_adapter` | Connector 配置发现、MQTT Plan 执行与报告下载 |
+| [VCarDAS BOOT 刷写（开发中）](vcardas_bootloader_adapter/README.md) | `vcardas_bootloader_adapter` | 根据 App/Driver 文件匹配刷写目标并编排测试模块 |
 
 公共开发规则见[插件开发约定](../../docs/development/plugin-development.md)，
 脚本可用的模块和权限见[运行时文档](../../docs/runtime/README.md)。

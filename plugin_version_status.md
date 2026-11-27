@@ -448,6 +448,204 @@
       "base_version": "1.0.0",
       "build_number": 9,
       "content_sha256": "3210a69e3f75fc389fc1cdd0decffe0c106a4f67acefbb25b5ff6a9b24c2aab8"
+    },
+    {
+      "package_id": "canoe_test_adapter",
+      "base_version": "1.0.0",
+      "build_number": 13,
+      "content_sha256": "2b55cfb9c7b3f8baaeb467f7429e959c3f55476b42a60cf8a75178de91c8d04a"
+    },
+    {
+      "package_id": "atech_bootload_adapter",
+      "base_version": "1.0.1",
+      "build_number": 10,
+      "content_sha256": "9cbfba2625ba1ca3fdea216c352a91d24a52b2866e6cc3742af0f8abe86de06f"
+    },
+    {
+      "package_id": "dynamic_stage_test_plugin",
+      "base_version": "1.0.0",
+      "build_number": 10,
+      "content_sha256": "499c877d1fa99fd5933694fb943dc8ae23c73b6bd44a9f624fed637a41e1af45"
+    },
+    {
+      "package_id": "ExcelModifyTest",
+      "base_version": "1.0.0",
+      "build_number": 10,
+      "content_sha256": "2aec82a7e718a7a0cbbdb6e46a7fbdf842c6f4c0988feb969df1b2ef0c605276"
+    },
+    {
+      "package_id": "hello_world_adapter",
+      "base_version": "1.0.0",
+      "build_number": 13,
+      "content_sha256": "253c941d9a5cad4da40ecdf652041462f3f1bdce540dc8463cf6e00f2f1ca1f1"
+    },
+    {
+      "package_id": "canoe_flash_adapter",
+      "base_version": "1.0.0",
+      "build_number": 11,
+      "content_sha256": "a83da5b00446e490449faa7b038977073a1d6bcc90344c48867c974a6a0b9d74"
+    },
+    {
+      "package_id": "vcarea_test_adapter",
+      "base_version": "1.0.0",
+      "build_number": 13,
+      "content_sha256": "a4455b55be1f0a0e49a57ed500e45a19796c5b47759cb1c2f3fd7b0295946181"
+    },
+    {
+      "package_id": "vcardas_bootloader_adapter",
+      "base_version": "1.0.0",
+      "build_number": 1,
+      "content_sha256": "7c323de501b860951601909abd0844ff5b16dc3b7c2d0ac0d711d7113c02d00f"
+    },
+    {
+      "package_id": "vcardas_bootloader_adapter",
+      "base_version": "1.0.0",
+      "build_number": 2,
+      "content_sha256": "663fc869ee9f7cb69deed198ed6316369c94c9a98894d6ef8ce23460c22613b8"
+    },
+    {
+      "package_id": "vcardas_bootloader_adapter",
+      "base_version": "1.0.0",
+      "build_number": 3,
+      "content_sha256": "5ecb4a4feccf3d2ec5596153f6bbc40a2b64c8c5a25549aa7c37fc1427b5156a"
+    },
+    {
+      "package_id": "vcardas_bootloader_adapter",
+      "base_version": "1.0.0",
+      "build_number": 4,
+      "content_sha256": "7167a1643576101e7bae4d89995c5a4b6e7b33abe30d7b5da0f46d951e7545b9"
+    },
+    {
+      "package_id": "vcardas_bootloader_adapter",
+      "base_version": "1.0.0",
+      "build_number": 5,
+      "content_sha256": "0242f0165e6ea67d70d96c049e7bab8fda9e7ca36884e0953a68788565ddca06"
+    },
+    {
+      "package_id": "vcardas_bootloader_adapter",
+      "base_version": "1.0.0",
+      "build_number": 6,
+      "content_sha256": "8ee509a6317458286c20a579688f8325a80e2d639793c4666db906e1715ff055"
+    },
+    {
+      "package_id": "vcardas_bootloader_adapter",
+      "base_version": "1.0.0",
+      "build_number": 7,
+      "content_sha256": "cc6877c269e8e4b0d0c2f3410335bca104d1fd9ff3259257ea5df03d0a049146"
+    },
+    {
+      "package_id": "vcardas_bootloader_adapter",
+      "base_version": "1.0.0",
+      "build_number": 8,
+      "content_sha256": "1a9640c9658db3629e85ee99e2f760694a9dc7b7ef888c669ecb8db28f6debd1"
+    },
+    {
+      "package_id": "vcardas_bootloader_adapter",
+      "base_version": "1.0.0",
+      "build_number": 9,
+      "content_sha256": "61856bc81d252b863d37236feb3c73c449b47c92eb76dbe739e437e14d4325ab"
+    },
+    {
+      "package_id": "vcardas_bootloader_adapter",
+      "base_version": "1.0.0",
+      "build_number": 10,
+      "content_sha256": "fe0396585dcfc85614385e5d29ce9d258348a032d054428f0df937d265459cd2"
+    },
+    {
+      "package_id": "vcardas_bootloader_adapter",
+      "base_version": "1.0.0",
+      "build_number": 11,
+      "content_sha256": "cf8091a538c0cb305c33aa846b6dd41fe252263ec8182ff4f6edd685dc4e375f"
+    },
+    {
+      "package_id": "vcardas_bootloader_adapter",
+      "base_version": "1.0.0",
+      "build_number": 12,
+      "content_sha256": "4903c8ec038d4365f55b2a17798f05976b4d757053cd30c399170001695d10a5"
+    },
+    {
+      "package_id": "vcardas_bootloader_adapter",
+      "base_version": "1.0.0",
+      "build_number": 13,
+      "content_sha256": "2a64c0967c939775d303e2451c0efa33f0c62911d2bd1189d4f8f5bccb8f784c"
+    },
+    {
+      "package_id": "vcardas_bootloader_adapter",
+      "base_version": "1.0.0",
+      "build_number": 14,
+      "content_sha256": "0168134b7e47f82428dd7c28ceaa98ebb68dc7ff8c26bad14967c9b1b817b5bd"
+    },
+    {
+      "package_id": "vcardas_bootloader_adapter",
+      "base_version": "1.0.0",
+      "build_number": 15,
+      "content_sha256": "8136d5c93ba1611e670022ff566bd2a8f5fb89b034e39ea60005918eb62adef9"
+    },
+    {
+      "package_id": "vcardas_bootloader_adapter",
+      "base_version": "1.0.0",
+      "build_number": 16,
+      "content_sha256": "f45a1a6526cd739f072246de62724fd199c427fb9eec4dbf7a0ed7e236809c55"
+    },
+    {
+      "package_id": "vcardas_bootloader_adapter",
+      "base_version": "1.0.0",
+      "build_number": 17,
+      "content_sha256": "d61b04976990c0e483ce34c974ae901f3d0db3a25f377ade7ab4f1efe3fa0237"
+    },
+    {
+      "package_id": "vcardas_bootloader_adapter",
+      "base_version": "1.0.0",
+      "build_number": 18,
+      "content_sha256": "72aa12b2d686fbae83a16098bdd59457eec94b81899dc84e24daf124beb91d63"
+    },
+    {
+      "package_id": "vcardas_bootloader_adapter",
+      "base_version": "1.0.0",
+      "build_number": 19,
+      "content_sha256": "31da1ae288f2ca50ef3964e0c12fff8f1694f1d5a29de1a627818c7e79f9a10f"
+    },
+    {
+      "package_id": "vcardas_bootloader_adapter",
+      "base_version": "1.0.0",
+      "build_number": 20,
+      "content_sha256": "2385a582850ce807ec3dcb615ed8c2de998ea30182863ee7a5964d86f8a4bf11"
+    },
+    {
+      "package_id": "vcardas_bootloader_adapter",
+      "base_version": "1.0.0",
+      "build_number": 21,
+      "content_sha256": "720ec06a91b17a5c63d4d5c081bc0698ca9a739a98305c1e877d2b836b4f6165"
+    },
+    {
+      "package_id": "vcardas_bootloader_adapter",
+      "base_version": "1.0.0",
+      "build_number": 22,
+      "content_sha256": "95c16848dc2685d6195e23d1dd17ad43bec8800e9fcadcf2b2a6e11bfa253363"
+    },
+    {
+      "package_id": "vcardas_bootloader_adapter",
+      "base_version": "1.0.0",
+      "build_number": 23,
+      "content_sha256": "41bf5bd9bce18663c4cd43aa687db76b349b905ff3ea0fecc0ac22271c86be7d"
+    },
+    {
+      "package_id": "vcardas_bootloader_adapter",
+      "base_version": "1.0.0",
+      "build_number": 24,
+      "content_sha256": "9be431b3a1bb062ddcf78533300f6de5782b5ff23f899848cf006a322c958774"
+    },
+    {
+      "package_id": "vcardas_bootloader_adapter",
+      "base_version": "1.0.0",
+      "build_number": 25,
+      "content_sha256": "3702f2ded0279573b74f69dc294d1e55c7b0a5a2655161258610dd56c76bd4c4"
+    },
+    {
+      "package_id": "vcardas_bootloader_adapter",
+      "base_version": "1.0.0",
+      "build_number": 26,
+      "content_sha256": "82915fe2beb18d0c8071c2a049a62dcaeff9e62ce3a3e5b9db3f302717a5a664"
     }
   ]
 }

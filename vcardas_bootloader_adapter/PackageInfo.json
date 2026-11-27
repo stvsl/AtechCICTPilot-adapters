@@ -1,0 +1,76 @@
+{
+    "ManifestVersion": 2,
+    "PackageId": "vcardas_bootloader_adapter",
+    "PackageNameCN": "VCarDAS Boot刷写适配器",
+    "PackageNameEN": "VCarDAS BootLoader Flash Tool Adapter",
+    "PackageVersion": "1.0.0",
+    "DescriptionCN": "VCarDAS Boot刷写工具",
+    "DescriptionEN": "Match App and Driver firmware to BOOT flashing test modules in a VCarDAS project",
+    "Author": "DOTRUST",
+    "NodeType": "Flash",
+    "CapabilityNameCN": "VCarDAS Boot刷写",
+    "CapabilityNameEN": "VCarDAS BootLoader Flash Tool",
+    "Runtime": {
+        "ApiVersion": "1.0",
+        "Language": "javascript"
+    },
+    "Permissions": {
+        "CLI": {
+            "Executables": [
+                {
+                    "Id": "VCARDAS_EXECUTABLE",
+                    "DeviceProperty": "VCARDAS_EXE"
+                },
+                {
+                    "Id": "VCARDAS_HELPER",
+                    "Path": "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+                }
+            ],
+            "AllowTerminal": false
+        },
+        "WebSocket": {
+            "Enabled": true
+        }
+    },
+    "CallingRuntime": [
+        "CLI",
+        "WebSocket"
+    ],
+    "SelfExaminationAbility": true,
+    "RequirementProperty": [
+        {
+            "id": "CONFIG_PACKAGE",
+            "nameCN": "配置参数包",
+            "nameEN": "ConfigParametersPackage",
+            "type": "file",
+            "required": true,
+            "fileExtension": ".zip"
+        },
+        {
+            "id": "APP_FILE",
+            "nameCN": "Application 固件",
+            "nameEN": "Application firmware",
+            "type": "file_multi",
+            "required": true,
+            "fileExtension": ".hex|.cbf|.rsa"
+        },
+        {
+            "id": "DRIVER_FILE",
+            "nameCN": "Flash Driver 固件",
+            "nameEN": "Flash Driver firmware",
+            "type": "file_multi",
+            "required": true,
+            "fileExtension": ".hex|.rsa"
+        }
+    ],
+    "OnDeviceProperty": [
+        {
+            "id": "VCARDAS_EXE",
+            "nameCN": "VCarDAS2.exe 路径",
+            "nameEN": "VCarDAS2.exe path",
+            "type": "file",
+            "required": true,
+            "fileExtension": ".exe"
+        }
+    ]
+}
