@@ -25,4 +25,4 @@ cmake --build --preset=dev-fast --target plugin_hello_world_adapter
 - [插件清单](PackageInfo.json)、[工作流](StepConfig.groovy)与[脚本入口](scripts/hello_world.js)。
 
 本插件的示例和模拟约定在本目录维护。宿主执行机制见
-[运行时执行契约](../../../docs/runtime/execution.dox)。
+[运行时执行契约](https://github.com/stvsl/AtechCICTPilot/blob/master/docs/runtime/execution.dox)。

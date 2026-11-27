@@ -76,4 +76,4 @@ ctest --preset=dev-fast -R 'AtechCICTPilot_(plugin_compiler|runtime_interface|tu
 ```
 
 GUI 操作效果由用户验证。全体适配器共用的开发规范见
-[插件开发约定](../../../../docs/development/plugin-development.md)。
+[插件开发约定](https://github.com/stvsl/AtechCICTPilot/blob/master/docs/development/plugin-development.md)。

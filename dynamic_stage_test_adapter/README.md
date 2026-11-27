@@ -18,5 +18,5 @@ cmake --build --preset=dev-fast --target plugin_dynamic_stage_test_plugin
 任务详情展示实际生成的阶段，发布资源包含 `dynamic-stage-report.json`。
 
 详细参数、失败与取消操作及测试命令见[使用与验收](docs/usage.md)。
-公共接口见[JavaScript 运行时](../../../docs/runtime/javascript.dox)和
-[执行契约](../../../docs/runtime/execution.dox)。
+公共接口见[JavaScript 运行时](https://github.com/stvsl/AtechCICTPilot/blob/master/docs/runtime/javascript.dox)和
+[执行契约](https://github.com/stvsl/AtechCICTPilot/blob/master/docs/runtime/execution.dox)。

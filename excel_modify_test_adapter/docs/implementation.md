@@ -60,7 +60,7 @@ GUI 与 TUI 共用同一插件导入及离线执行后端：导入这个插件�
 ## 依赖可重现构建
 
 运行插件不需要 npm；只有更新或重新生成 vendor 时需要 Node.js 与 pnpm。
-构建源与锁文件在 [工具目录](../../../../tools/excel_modify_test_vendor/package.json)：
+构建源与锁文件在 [工具目录](https://github.com/stvsl/AtechCICTPilot/blob/master/tools/excel_modify_test_vendor/package.json)：
 
 ```sh
 pnpm --dir tools/excel_modify_test_vendor install --frozen-lockfile --ignore-scripts

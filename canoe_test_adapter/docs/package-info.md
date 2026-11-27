@@ -47,7 +47,7 @@ JSON 字段名和属性 ID 区分大小写。文件必须是合法 JSON，不能
 
 当前构建规则将基础版本与四位构建轮次组合成完整包版本，例如 `1.0.0_0001`。
 源码中仍填写 `1.0.0`，不要手工附加构建轮次。构建账本、内容摘要和版本递增规则见
-[插件开发约定](../../../../docs/development/plugin-development.md)。
+[插件开发约定](https://github.com/stvsl/AtechCICTPilot/blob/master/docs/development/plugin-development.md)。
 
 ## 3. 平台工程包声明
 
@@ -265,10 +265,10 @@ CANoe 安装显示名称模板展开为 `Vector CANoe 19`。这里的 `{version}
 5. 修改支持版本、工具 ID 或安装路径时，同步检查会话模块、报告转换和版本测试。
 6. 修改契约后同步更新本文及相应工程包 / 执行文档。
 
-结构约束以 [PluginJson.h](../../../service/plugin/PluginJson.h) 为源头，
-[plugin-manifest.schema.json](../../../../docs/schemas/plugin-manifest.schema.json)
+结构约束以 [PluginJson.h](https://github.com/stvsl/AtechCICTPilot/blob/master/src/service/plugin/PluginJson.h) 为源头，
+[plugin-manifest.schema.json](https://github.com/stvsl/AtechCICTPilot/blob/master/docs/schemas/plugin-manifest.schema.json)
 由 C++ 契约生成，不要为适配清单而手工修改生成 Schema。公共规则见
-[JSON 契约说明](../../../../docs/development/json-contracts.md)。
+[JSON 契约说明](https://github.com/stvsl/AtechCICTPilot/blob/master/docs/development/json-contracts.md)。
 
 在仓库根目录构建本插件：
 
@@ -278,5 +278,5 @@ cmake --build --preset=dev-fast --target plugin_canoe_test_adapter
 ```
 
 构建会执行清单契约校验、编译工作流并生成插件包。打包成功可能更新源码中的
-构建版本账本；产物路径和版本规则见[插件开发约定](../../../../docs/development/plugin-development.md)。
+构建版本账本；产物路径和版本规则见[插件开发约定](https://github.com/stvsl/AtechCICTPilot/blob/master/docs/development/plugin-development.md)。
 不要手工修改生成的 `workflow.json` 和 `.cictplugin` 文件。
