@@ -1,0 +1,7 @@
+# 客户端生成的本地调试配置，不进版本库。
+**/.cict-debug.json
+# Python 缓存。
+__pycache__/
+*.pyc
+# 系统文件。
+**/.DS_Store
